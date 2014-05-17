@@ -49,6 +49,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   config.database.options = {}
   config.secret = 'meanstackjs'
   config.mount = '/'
+  config.port = 3000
   config.router =
     caseSensitive: false
     strict: false
