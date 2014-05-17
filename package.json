@@ -1,0 +1,56 @@
+{
+  "name": "meanstack-framework",
+  "version": "0.0.1",
+  "author": "Jure Žvelc <jzvelc@gmail.com>",
+  "description": "MEAN stack based framework.",
+  "keywords": [
+    "mean",
+    "framework",
+    "mongo",
+    "express",
+    "angular"
+  ],
+  "licenses": [{
+    "type": "MIT",
+    "url": "https://github.com/meanstackjs/meanstack-framework/blob/master/LICENSE"
+  }],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meanstackjs/meanstack-framework.git"
+  },
+  "bugs": {
+    "url": "https://github.com/meanstackjs/meanstack-framework/issues"
+  },
+  "engines": {
+    "node": ">= 0.8.0"
+  },
+  "main": "lib/framework",
+  "scripts": {
+    "prepublish": "coffee --bare --compile --output lib src"
+  },
+  "dependencies": {
+    "express": "4.x.x",
+    "express-session": "1.0.x",
+    "express-validator": "2.1.x",
+    "express-postrender": "git+https://github.com/jzvelc/express-postrender.git",
+    "connect-mongo": "0.4.x",
+    "connect-flash": "0.1.x",
+    "vhosted": "git+https://github.com/jzvelc/vhosted.git",
+    "compression": "1.0.x",
+    "body-parser": "1.0.x",
+    "morgan": "1.0.x",
+    "cookie-parser": "1.0.x",
+    "method-override": "1.0.x",
+    "serve-favicon": "2.0.x",
+    "view-helpers": "0.1.x",
+    "errorhandler": "1.0.x",
+    "mongoose": "3.8.x",
+    "dependable": "0.2.x",
+    "glob": "3.2.x",
+    "lodash": "2.4.x",
+    "ect": "0.5.x"
+  },
+  "devDependencies": {
+    "coffee-script": "1.7.x"
+  }
+}

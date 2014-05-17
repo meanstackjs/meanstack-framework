@@ -1,0 +1,6 @@
+{
+  "name": "meanstack-framework",
+  "issues": true,
+  "travis": true,
+  "twitter": "meanstackjs"
+}
