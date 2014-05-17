@@ -8,7 +8,6 @@ glob = require 'glob'
 fs = require 'fs'
 _ = require 'lodash'
 
-plugin = require './plugin'
 utils = require './utils'
 
 module.exports = (projectdir, appdir, appext, config, built) ->
@@ -238,10 +237,10 @@ module.exports = (projectdir, appdir, appext, config, built) ->
           vhost.plugin = path.join(relprojectdir, vhost.plugin)
         else
           vhost.plugin = path.join(relprojectdir, 'node_modules', vhost.plugin)
-        p = require(vhost.plugin)(plugin, mean, vhost.config)
-        plugins[p.appname] = {}
-        plugins[p.appname]['router'] = p.router
-        plugins[p.appname]['paths'] = vhost.paths
+        plugin = require(vhost.plugin)(mean, vhost.config)
+        plugins[plugin.appname] = {}
+        plugins[plugin.appname]['router'] = plugin.router
+        plugins[plugin.appname]['paths'] = vhost.paths
 
   # Before middleware chainware
   if chainware.beforeMiddleware?
