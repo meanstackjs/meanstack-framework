@@ -232,7 +232,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
         if not _.isArray vhost.paths
           vhost.paths = [vhost.paths]
         if vhost.paths.length is 0
-          paths.push '/'
+          vhost.paths.push '/'
         if regex.test vhost.plugin
           vhost.plugin = path.join(relprojectdir, vhost.plugin)
         else
