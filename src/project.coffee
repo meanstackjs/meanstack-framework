@@ -264,7 +264,6 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   locals[appname] = {}
   locals[appname].appname = appname
   locals[appname].assets = assets[appname]
-  locals[appname].modulename = appname.replace '-', '.'
   locals[appname].module = (str) ->
     return "#{locals[appname].modulename}.#{str}"
   locals[appname].asset = (str) ->
@@ -275,7 +274,6 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     locals[k] = {}
     locals[k].appname = k
     locals[k].assets = assets[k]
-    locals[k].modulename = appname.replace '-', '.'
     locals[k].module = (str) ->
       return "#{locals[k].modulename}.#{str}"
     locals[k].asset = (str) ->
@@ -406,7 +404,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   router = express.Router(config.router)
   router.get '/mean.json', (req, res) ->
     obj = {}
-    obj['appname'] = appname
+    obj['appname'] = appname.replace('-', '.')
     obj['mount'] = config.mount
     obj['assets'] = assets
     res.json obj
