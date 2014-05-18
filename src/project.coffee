@@ -267,10 +267,10 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   locals[appname].modulename = appname.replace '-', '.'
   locals[appname].module = (str) ->
     return "#{locals[appname].modulename}.#{str}"
-  locals[appname].view = (str) ->
-    return "public/views/#{str}"
-  locals[appname].resource = (str) ->
+  locals[appname].asset = (str) ->
     return "public/#{str}"
+  locals[appname].resource = (str) ->
+    return "public/js/#{str}"
   for k of mean.get('plugins')
     locals[k] = {}
     locals[k].appname = k
@@ -278,10 +278,10 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     locals[k].modulename = appname.replace '-', '.'
     locals[k].module = (str) ->
       return "#{locals[k].modulename}.#{str}"
-    locals[k].view = (str) ->
-      return "public/plugins/#{k}/views/#{str}"
-    locals[k].resource = (str) ->
+    locals[k].asset = (str) ->
       return "public/plugins/#{k}/#{str}"
+    locals[k].resource = (str) ->
+      return "public/plugins/#{k}/js/#{str}"
   app.use (req, res, next) ->
     res.removeHeader 'X-Powered-By'
     res.locals['mean'] = locals
