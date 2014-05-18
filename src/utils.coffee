@@ -30,7 +30,7 @@ module.exports.Renderer = class Renderer
     return
 
 module.exports.aggregate = (collection, file, dir, value) ->
-  chunks = path.relative(dir, file.replace(/\..+$/, '')).split(path.sep)
+  chunks = path.relative(dir, file.replace(/\.[^.]+$/, '')).split(path.sep)
   cursor = collection
   for i in [0..chunks.length - 1] by 1
     if i < chunks.length - 1
