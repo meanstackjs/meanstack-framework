@@ -217,16 +217,18 @@ module.exports = (projectdir, appdir, appext, config, built) ->
       mean.register name + 'Schema', schema
 
     for i, file of files
-      schema = mean.get names[i] + 'Schema'
-      mean.register names[i] + 'Schema', -> schema
+      fn = (instance) ->
+        -> instance
+      mean.register names[i] + 'Schema', fn mean.get names[i] + 'Schema'
 
     for i, file of files
       model = require(file).model
       mean.register names[i] + 'Model', model
 
     for i, file of files
-      model = mean.get names[i] + 'Model'
-      mean.register names[i] + 'Model', -> model
+      fn = (instance) ->
+        -> instance
+      mean.register names[i] + 'Model', fn mean.get names[i] + 'Model'
 
   # Load controllers
   dir = path.resolve "#{appdir}/controllers"
@@ -245,8 +247,9 @@ module.exports = (projectdir, appdir, appext, config, built) ->
       mean.register name + 'Ctrl', require(file)
 
     for i, file of files
-      controller = mean.get names[i] + 'Ctrl'
-      mean.register names[i] + 'Ctrl', -> controller
+      fn = (instance) ->
+        -> instance
+      mean.register names[i] + 'Ctrl', fn mean.get names[i] + 'Ctrl'
 
   # Load plugins
   plugins = {}
@@ -293,7 +296,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   locals[appname] = {}
   locals[appname].name = appname
   locals[appname].assets = assets[appname]
-  locals[appname].module = (str) ->
+  locals[appname].namespace = (str) ->
     return "#{locals[appname].modulename}.#{str}"
   locals[appname].asset = (str) ->
     return "public/#{str}"
@@ -303,7 +306,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     locals[k] = {}
     locals[k].name = k
     locals[k].assets = assets[k]
-    locals[k].module = (str) ->
+    locals[k].namespace = (str) ->
       return "#{locals[k].modulename}.#{str}"
     locals[k].asset = (str) ->
       return "public/plugins/#{k}/#{str}"
