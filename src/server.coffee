@@ -16,8 +16,8 @@ module.exports = (projectdir, appdir, appext, config, mean) ->
     vhosted = require 'vhosted'
     vhosts = mean.resolve require("#{relprojectdir}/vhosts#{appext}")
     server = vhosted server, projectdir, vhosts
-    mean.register 'server', -> server
+    mean.register '$server', -> server
   else
-    mean.register 'server', -> mean.get 'app'
+    mean.register '$server', -> mean.get '$app'
 
   mean.resolve require("#{relappdir}/server")

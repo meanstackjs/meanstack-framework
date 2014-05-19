@@ -29,18 +29,21 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   pkg = require(path.join projectdir, 'package.json')
   appname = pkg.name
   chainware = require("#{relappdir}/chainware")
+  dir =
+    project: projectdir
+    public: publicdir
+    app: appdir
 
   # Register dependencies
   mean = dependable.container()
-  mean.register 'mean', mean
-  mean.register 'environment', process.env.NODE_ENV
-  mean.register 'projectdir', projectdir
-  mean.register 'publicdir', publicdir
-  mean.register 'appdir', appdir
-  mean.register 'appext', appext
-  mean.register 'appname', appname
-  mean.register 'assets', {}
-  mean.register 'plugins', {}
+  mean.register '$mean', mean
+  mean.register '$env', process.env.NODE_ENV
+  mean.register '$dir', dir
+  mean.register '$ext', appext
+  mean.register '$name', appname
+  mean.register '$pkg', pkg
+  mean.register '$assets', {}
+  mean.register '$plugins', {}
 
   # Basic configuration
   config = {}
@@ -72,7 +75,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   config.middleware['express-session'] =
     key: 'sid'
   config.middleware['connect-mongo'] =
-    collection: 'session'
+    collection: 'Session'
   config.middleware['view-helpers'] = true
   config.middleware['connect-flash'] = true
   config.middleware['serve-favicon'] = false
@@ -90,14 +93,14 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     config.views.cache = false
   config.views.callback = (html) -> return html
   config.views.extension = 'html'
-  mean.register 'config', config
+  mean.register '$config', config
 
   # Config chainware
   if chainware.config?
     mean.resolve chainware.config
 
   # Override config
-  config = mean.get 'config'
+  config = mean.get '$config'
   if overrides?
     defaults = _.partialRight(_.assign, (a, b) ->
       if not a?
@@ -121,8 +124,8 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     connection = mongoose.createConnection config.database.uri, config.database.options
   else
     connection = mongoose.createConnection config.database.uri
-  mean.register 'connection', connection
-  mean.register 'mongoose', mongoose
+  mean.register '$connection', connection
+  mean.register '$mongoose', mongoose
 
   # Configure session store
   if config.middleware['express-session'] and \
@@ -149,7 +152,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   if config.router.caseSensitive
     app.enable 'case sensitive routing'
 
-  mean.register 'app', -> app
+  mean.register '$app', -> app
 
   # Set default view renderer
   if not config.views.render?
@@ -195,29 +198,55 @@ module.exports = (projectdir, appdir, appext, config, built) ->
         app.locals
       )
       utils.aggregate views, file, config.views.dir, renderer
-  mean.register 'views', views
+  mean.register '$views', views
 
   # Load models
-  models = {}
   dir = path.resolve "#{appdir}/models"
-  glob "#{appdir}/models/**/*.{js,coffee}", sync: true, (err, files) ->
+  glob "#{appdir}/models/**/*#{appext}", sync: true, (err, files) ->
     if err
       console.log err
       process.exit 0
+    names = []
     for file in files
-      utils.aggregate models, file, dir, mean.resolve require file
-  mean.register 'models', models
+      name = path.basename(file).replace(path.extname(file), '').replace(/[-._]\w/g, ($1) ->
+        return $1[1].toUpperCase();
+      )
+      name = name[0].toUpperCase() + name.substr(1)
+      names.push(name)
+      schema = require(file).schema
+      mean.register name + 'Schema', schema
+
+    for i, file of files
+      schema = mean.get names[i] + 'Schema'
+      mean.register names[i] + 'Schema', -> schema
+
+    for i, file of files
+      model = require(file).model
+      mean.register names[i] + 'Model', model
+
+    for i, file of files
+      model = mean.get names[i] + 'Model'
+      mean.register names[i] + 'Model', -> model
 
   # Load controllers
-  controllers = {}
   dir = path.resolve "#{appdir}/controllers"
-  glob "#{appdir}/controllers/**/*.{js,coffee}", sync: true, (err, files) ->
+  glob "#{appdir}/controllers/**/*#{appext}", sync: true, (err, files) ->
     if err
       console.log err
       process.exit 0
+    names = []
     for file in files
-      utils.aggregate controllers, file, dir, mean.resolve require file
-  mean.register 'controllers', controllers
+      name = path.basename(file).replace(path.extname(file), '').replace(/[-._]\w/g, ($1) ->
+        return $1[1].toUpperCase();
+      )
+      name = name[0].toUpperCase() + name.substr(1)
+      names.push(name)
+      controller = require file
+      mean.register name + 'Ctrl', require(file)
+
+    for i, file of files
+      controller = mean.get names[i] + 'Ctrl'
+      mean.register names[i] + 'Ctrl', -> controller
 
   # Load plugins
   plugins = {}
@@ -247,7 +276,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     mean.resolve chainware.beforeMiddleware
 
   # Register assets
-  assets = mean.get('assets')
+  assets = mean.get('$assets')
   assetfile = path.join projectdir, '.assets'
   if fs.existsSync assetfile
     assets[appname] = JSON.parse(fs.readFileSync(assetfile))
@@ -258,11 +287,11 @@ module.exports = (projectdir, appdir, appext, config, built) ->
       other: {}
 
   locals = {}
-  locals.appname = appname
+  locals.name = appname
   locals.assets = assets
   locals.mount = config.mount
   locals[appname] = {}
-  locals[appname].appname = appname
+  locals[appname].name = appname
   locals[appname].assets = assets[appname]
   locals[appname].module = (str) ->
     return "#{locals[appname].modulename}.#{str}"
@@ -270,9 +299,9 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     return "public/#{str}"
   locals[appname].resource = (str) ->
     return "public/js/#{str}"
-  for k of mean.get('plugins')
+  for k of mean.get('$plugins')
     locals[k] = {}
-    locals[k].appname = k
+    locals[k].name = k
     locals[k].assets = assets[k]
     locals[k].module = (str) ->
       return "#{locals[k].modulename}.#{str}"
@@ -404,11 +433,11 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   router = express.Router(config.router)
   router.get '/mean.json', (req, res) ->
     obj = {}
-    obj['appname'] = appname.replace('-', '.')
+    obj['name'] = appname.replace(/[.-_]/g, '.')
     obj['mount'] = config.mount
     obj['assets'] = assets
     res.json obj
-  mean.register 'router', -> router
+  mean.register '$router', -> router
 
   # Before plugin routing chainware
   if chainware.beforePluginsRouting?
@@ -424,12 +453,12 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     mean.resolve chainware.afterPluginsRouting
 
   # Load routes
-  glob "#{appdir}/routes/**/*.{js,coffee}", sync: true, (err, files) ->
+  glob "#{appdir}/routes/**/*#{appext}", sync: true, (err, files) ->
     if err
       console.log err
       process.exit 0
     for file in files
-      mean.resolve {route: express.Router(config.router)}, require file
+      mean.resolve {'$route': express.Router(config.router)}, require file
   app.use router
 
   # After routing chainware

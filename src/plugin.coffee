@@ -20,24 +20,27 @@ module.exports = (projectdir, appdir, appext, mean, config) ->
   pkg = require(path.join projectdir, 'package.json')
   appname = pkg.name
   chainware = require("#{relappdir}/chainware")
+  dir =
+    project: projectdir
+    public: publicdir
+    app: appdir
 
   # Register dependencies
   plugin = dependable.container()
-  plugin.register 'plugin', plugin
-  plugin.register 'mean', mean
-  plugin.register 'environment', process.env.NODE_ENV
-  plugin.register 'projectdir', projectdir
-  plugin.register 'publicdir', publicdir
-  plugin.register 'appdir', appdir
-  plugin.register 'appext', appext
-  plugin.register 'appname', appname
+  plugin.register '$plugin', plugin
+  plugin.register '$mean', mean
+  plugin.register '$env', process.env.NODE_ENV
+  plugin.register '$dir', dir
+  plugin.register '$ext', appext
+  plugin.register '$name', appname
+  plugin.register '$pkg', pkg
 
   # Basic configuration
   config = {}
-  config.router = mean.get('config').router
+  config.router = mean.get('$config').router
 
   # Register plugin
-  plugins = mean.get 'plugins'
+  plugins = mean.get '$plugins'
   plugins[appname] = plugin
 
   # Default views configuration
@@ -49,7 +52,7 @@ module.exports = (projectdir, appdir, appext, mean, config) ->
     config.views.cache = false
   config.views.callback = (html) -> return html
   config.views.extension = 'html'
-  plugin.register 'config', config
+  plugin.register '$config', config
 
   # Config chainware
   if chainware.config?
@@ -65,16 +68,16 @@ module.exports = (projectdir, appdir, appext, mean, config) ->
     config = defaults(overrides, config)
 
   # Register database
-  plugin.register 'connection', mean.get('connection')
-  plugin.register 'mongoose', mean.get('mongoose')
+  plugin.register '$connection', mean.get('$connection')
+  plugin.register '$mongoose', mean.get('$mongoose')
 
   # Before app chainware
   if chainware.beforeApp?
     plugin.resolve chainware.beforeApp
 
   # Register app
-  app = mean.get 'app'
-  plugin.register 'app', -> app
+  app = mean.get '$app'
+  plugin.register '$app', -> app
 
   # Register assets
   assetfile = path.join projectdir, '.assets'
@@ -85,8 +88,8 @@ module.exports = (projectdir, appdir, appext, mean, config) ->
       js: {}
       css: {}
       other: {}
-  mean.get('assets')[appname] = assets
-  plugin.register 'assets', assets
+  mean.get('$assets')[appname] = assets
+  plugin.register '$assets', assets
 
   # Set default view renderer
   if not config.views.engine?
@@ -122,29 +125,55 @@ module.exports = (projectdir, appdir, appext, mean, config) ->
         app.locals
       )
       utils.aggregate views, file, config.views.dir, renderer
-  plugin.register 'views', views
+  plugin.register '$views', views
 
   # Load models
-  models = {}
   dir = path.resolve "#{appdir}/models"
-  glob "#{appdir}/models/**/*.{js,coffee}", sync: true, (err, files) ->
+  glob "#{appdir}/models/**/*#{appext}", sync: true, (err, files) ->
     if err
       console.log err
       process.exit 0
+    names = []
     for file in files
-      utils.aggregate models, file, dir, plugin.resolve require file
-  plugin.register 'models', models
+      name = path.basename(file).replace(path.extname(file), '').replace(/[-._]\w/g, ($1) ->
+        return $1[1].toUpperCase();
+      )
+      name = name[0].toUpperCase() + name.substr(1)
+      names.push(name)
+      schema = require(file).schema
+      plugin.register name + 'Schema', schema
+
+    for i, file of files
+      schema = plugin.get names[i] + 'Schema'
+      plugin.register names[i] + 'Schema', -> schema
+
+    for i, file of files
+      model = require(file).model
+      plugin.register names[i] + 'Model', model
+
+    for i, file of files
+      model = plugin.get names[i] + 'Model'
+      plugin.register names[i] + 'Model', -> model
 
   # Load controllers
-  controllers = {}
   dir = path.resolve "#{appdir}/controllers"
-  glob "#{appdir}/controllers/**/*.{js,coffee}", sync: true, (err, files) ->
+  glob "#{appdir}/controllers/**/*#{appext}", sync: true, (err, files) ->
     if err
       console.log err
       process.exit 0
+    names = []
     for file in files
-      utils.aggregate controllers, file, dir, plugin.resolve require file
-  plugin.register 'controllers', controllers
+      name = path.basename(file).replace(path.extname(file), '').replace(/[-._]\w/g, ($1) ->
+        return $1[1].toUpperCase();
+      )
+      name = name[0].toUpperCase() + name.substr(1)
+      names.push(name)
+      controller = require file
+      plugin.register name + 'Ctrl', require(file)
+
+    for i, file of files
+      controller = plugin.get names[i] + 'Ctrl'
+      plugin.register names[i] + 'Ctrl', -> controller
 
   # Before routing chainware
   if chainware.beforeRouting?
@@ -152,15 +181,15 @@ module.exports = (projectdir, appdir, appext, mean, config) ->
 
   # Create router
   router = express.Router(config.router)
-  plugin.register 'router', -> router
+  plugin.register '$router', -> router
 
   # Load routes
-  glob "#{appdir}/routes/**/*.{js,coffee}", sync: true, (err, files) ->
+  glob "#{appdir}/routes/**/*#{appext}", sync: true, (err, files) ->
     if err
       console.log err
       process.exit 0
     for file in files
-      plugin.resolve {route: express.Router(config.router)}, require file
+      plugin.resolve {'$route': express.Router(config.router)}, require file
 
   # After routing chainware
   if chainware.afterRouting?
