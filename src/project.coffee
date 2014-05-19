@@ -219,7 +219,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     for i, file of files
       fn = (instance) ->
         -> instance
-      mean.register names[i] + 'Schema', fn mean.get names[i] + 'Schema'
+      mean.register names[i] + 'Schema', fn mean.get(names[i] + 'Schema')
 
     for i, file of files
       model = require(file).model
@@ -228,7 +228,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     for i, file of files
       fn = (instance) ->
         -> instance
-      mean.register names[i] + 'Model', fn mean.get names[i] + 'Model'
+      mean.register names[i] + 'Model', fn mean.get(names[i] + 'Model')
 
   # Load controllers
   dir = path.resolve "#{appdir}/controllers"
@@ -249,7 +249,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     for i, file of files
       fn = (instance) ->
         -> instance
-      mean.register names[i] + 'Ctrl', fn mean.get names[i] + 'Ctrl'
+      mean.register names[i] + 'Ctrl', fn mean.get(names[i] + 'Ctrl')
 
   # Load plugins
   plugins = {}
