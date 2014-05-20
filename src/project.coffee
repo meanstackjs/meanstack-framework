@@ -74,8 +74,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   config.middleware['method-override'] = true
   config.middleware['express-session'] =
     key: 'sid'
-  config.middleware['connect-mongo'] =
-    collection: 'Session'
+  config.middleware['connect-mongo'] = true
   config.middleware['view-helpers'] = true
   config.middleware['connect-flash'] = true
   config.middleware['serve-favicon'] = false
