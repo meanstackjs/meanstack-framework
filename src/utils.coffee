@@ -36,5 +36,7 @@ module.exports.aggregate = (collection, file, dir, value) ->
     if i < chunks.length - 1
       if not collection[chunks[i]]?
         cursor = collection[chunks[i]] = {}
+      else
+        cursor = collection[chunks[i]]
     else
       cursor[chunks[i]] = value

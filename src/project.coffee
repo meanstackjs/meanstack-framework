@@ -85,7 +85,7 @@ module.exports = (projectdir, appdir, appext, config, built) ->
 
   # Default views configuration
   config.views = {}
-  config.views.dir = path.resolve "#{appdir}/views/"
+  config.views.dir = path.resolve "#{appdir}/"
   if process.env.NODE_ENV is 'production'
     config.views.cache = true
   else
@@ -199,56 +199,57 @@ module.exports = (projectdir, appdir, appext, config, built) ->
       utils.aggregate views, file, config.views.dir, renderer
   mean.register '$views', views
 
-  # Load models
-  dir = path.resolve "#{appdir}/models"
-  glob "#{appdir}/models/**/*#{appext}", sync: true, (err, files) ->
-    if err
-      console.log err
-      process.exit 0
-    names = []
+  dir = path.resolve appdir
+  schemas = {}
+  models = {}
+  controllers = {}
+  constants = {}
+  variables = {}
+  routes = []
+  glob "#{dir}/**/*#{appext}", sync: true, (err, files) ->
     for file in files
-      name = path.basename(file).replace(path.extname(file), '').replace(/[-._]\w/g, ($1) ->
-        return $1[1].toUpperCase();
-      )
-      name = name[0].toUpperCase() + name.substr(1)
-      names.push(name)
-      schema = require(file).schema
-      mean.register name + 'Schema', schema
-
-    for i, file of files
-      fn = (instance) ->
-        -> instance
-      mean.register names[i] + 'Schema', fn mean.get(names[i] + 'Schema')
-
-    for i, file of files
-      model = require(file).model
-      mean.register names[i] + 'Model', model
-
-    for i, file of files
-      fn = (instance) ->
-        -> instance
-      mean.register names[i] + 'Model', fn mean.get(names[i] + 'Model')
-
-  # Load controllers
-  dir = path.resolve "#{appdir}/controllers"
-  glob "#{appdir}/controllers/**/*#{appext}", sync: true, (err, files) ->
-    if err
-      console.log err
-      process.exit 0
-    names = []
-    for file in files
-      name = path.basename(file).replace(path.extname(file), '').replace(/[-._]\w/g, ($1) ->
-        return $1[1].toUpperCase();
-      )
-      name = name[0].toUpperCase() + name.substr(1)
-      names.push(name)
-      controller = require file
-      mean.register name + 'Ctrl', require(file)
-
-    for i, file of files
-      fn = (instance) ->
-        -> instance
-      mean.register names[i] + 'Ctrl', fn mean.get(names[i] + 'Ctrl')
+      excluded = path.relative(dir, file)
+      if excluded is "server#{appext}" or excluded is "chainware#{appext}"
+        continue
+      mdl = require file
+      if mdl.schema?
+        _.forOwn mdl.schema, (prop, key) ->
+          mean.register key, prop
+          schemas[key] = prop
+      if mdl.model?
+        _.forOwn mdl.model, (prop, key) ->
+          mean.register key, prop
+          models[key] = prop
+      if mdl.controller?
+        _.forOwn mdl.controller, (prop, key) ->
+          mean.register key, prop
+          controllers[key] = prop
+      if mdl.constant?
+        _.forOwn mdl.constant, (prop, key) ->
+          mean.register key, prop
+          constants[key] = prop
+      if mdl.variable?
+        _.forOwn mdl.variable, (prop, key) ->
+          mean.register key, prop
+          variables[key] = prop
+      if mdl.route?
+        routes.push mdl.route
+  for key, value of constants
+    fn = (instance) ->
+      -> instance
+    mean.register key, fn(mean.get key)
+  for key, value of schemas
+    fn = (instance) ->
+      -> instance
+    mean.register key, fn(mean.get key)
+  for key, value of models
+    fn = (instance) ->
+      -> instance
+    mean.register key, fn(mean.get key)
+  for key, value of controllers
+    fn = (instance) ->
+      -> instance
+    mean.register key, fn(mean.get key)
 
   # Load plugins
   plugins = {}
@@ -455,12 +456,13 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     mean.resolve chainware.afterPluginsRouting
 
   # Load routes
-  glob "#{appdir}/routes/**/*#{appext}", sync: true, (err, files) ->
-    if err
-      console.log err
-      process.exit 0
-    for file in files
-      mean.resolve {'$route': express.Router(config.router)}, require file
+  for route in routes
+    r = express.Router(config.router)
+    mount = mean.resolve {'$route': r}, route
+    if _.isString mount
+      router.use mount, r
+    else
+      router.use '/', r
   app.use router
 
   # After routing chainware
