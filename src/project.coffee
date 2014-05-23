@@ -429,18 +429,18 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     mean.resolve chainware.afterConnectFlash
 
   # Before routing chainware
+  router = express.Router(config.router)
+  mean.register '$router', -> router
   if chainware.beforeRouting?
     mean.resolve chainware.beforeRouting
 
-  # Create router
-  router = express.Router(config.router)
+  # Serve MEAN data to client
   router.get '/mean.json', (req, res) ->
     obj = {}
     obj['name'] = appname.replace(/[.-_]/g, '.')
     obj['mount'] = config.mount
     obj['assets'] = assets
     res.json obj
-  mean.register '$router', -> router
 
   # Before plugin routing chainware
   if chainware.beforePluginsRouting?
