@@ -607,7 +607,7 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
     server.enable 'case sensitive routing'
 
   # Bootstrap
-  boostrap = fs.existsSync "#{$dir.app}/bootstrap#{$ext}"
+  bootstrap = fs.existsSync "#{$dir.app}/bootstrap#{$ext}"
   if bootstrap
     bootstrap = require("#{relativeAppDir}/bootstrap")
   if bootstrap and bootstrap.vhosts?
@@ -628,8 +628,9 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
       port = process.env.PORT or $config.port
       server = http.createServer(server).listen port, ->
         console.log 'Server listening on port ' + port
-    server.on 'listening', ->
-      fs.writeFileSync "#{$dir.project}/.tmp/reload", 'reload'
+    if server?
+      server.on 'listening', ->
+        fs.writeFileSync "#{$dir.project}/.tmp/reload", 'reload'
   if $env is 'production'
     $emitter.on 'mongoose-connected', ->
       listen()
