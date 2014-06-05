@@ -2,48 +2,126 @@ express = require 'express'
 mongoose = require 'mongoose'
 dependable = require 'dependable'
 postrender = require 'express-postrender'
-ect = require 'ect'
+swig = require 'swig'
 path = require 'path'
 glob = require 'glob'
+events = require 'events'
 fs = require 'fs'
 _ = require 'lodash'
-
 utils = require './utils'
 
-module.exports = (projectdir, appdir, appext, config, built) ->
-  relprojectdir = path.relative(__dirname, projectdir)
-  relappdir = path.relative(__dirname, appdir)
-  publicdir = path.join projectdir, 'public'
-  if config?
-    overrides = config
-
-  # If set to false plugins won't be loaded
-  if not built?
-    built = true
+module.exports = (projectDir, appDir, ext) ->
+  relativeProjectDir = path.relative(__dirname, projectDir)
+  relativeAppDir = path.relative(__dirname, appDir)
 
   # Set default environment
   if not process.env.NODE_ENV?
     process.env.NODE_ENV = 'development'
 
-  # Get package and chainware
-  pkg = require(path.join projectdir, 'package.json')
-  appname = pkg.name
-  chainware = require("#{relappdir}/chainware")
+  # Configure app name and directories
+  pkg = require(path.join projectDir, 'package.json')
+  name = pkg.name
+  publicDir = path.join projectDir, "public/#{name}"
   dir =
-    project: projectdir
-    public: publicdir
-    app: appdir
+    project: projectDir
+    public: publicDir
+    plugins: "#{projectDir}/plugins"
+    vhosts: "#{projectDir}/vhosts"
+    app: appDir
+
+  # Load chainware if available
+  if fs.existsSync "#{appDir}/chainware#{ext}"
+    chainware = require("#{relativeAppDir}/chainware")
 
   # Register dependencies
-  mean = dependable.container()
-  mean.register '$mean', mean
-  mean.register '$env', process.env.NODE_ENV
-  mean.register '$dir', dir
-  mean.register '$ext', appext
-  mean.register '$name', appname
-  mean.register '$pkg', pkg
-  mean.register '$assets', {}
-  mean.register '$plugins', {}
+  injector = dependable.container()
+  injector.register '$injector', injector
+  injector.register '$env', process.env.NODE_ENV
+  injector.register '$dir', dir
+  injector.register '$ext', ext
+  injector.register '$name', name
+  injector.register '$assets',
+    js: {}
+    css: {}
+    other: {}
+  injector.register '$mounts', ['/']
+  injector.register '$mount', '/',
+  injector.register '$plugin', -> (mounts, plugin, shared) ->
+    # Only plugin is provided, ignore routing
+    if not plugin?
+      plugin = mounts
+      mounts = []
+
+    if fs.existsSync "#{plugin}#{ext}"
+      plugin = require("#{plugin}#{ext}")
+    else
+      plugin = require("#{plugin}.js");
+
+    # Share database connection
+    if not shared? or shared is true
+      plugin.injector.register '__shared', true
+      plugin.injector.register '$connection', -> injector.get('$connection')
+      plugin.injector.register '$mongoose', -> injector.get('$mongoose')
+
+    # Convert mount to array
+    if _.isString mounts
+      mounts = [mounts]
+
+    # Register mounts
+    plugin.injector.register '$mounts', mounts
+
+    # Pass assets to plugin
+    assets = injector.get '$assets'
+    pluginAssets = plugin.injector.get '$assets'
+    if not pluginAssets[name]?
+      pluginAssets[name] = assets
+    plugin.injector.register '$assets', pluginAssets
+
+    # Load plugin
+    plugin.load()
+
+    # Store injectors and assets
+    injectors = injector.get '$injectors'
+    for k, v of plugin.injector.get '$injectors'
+      if not injectors[k]?
+        injectors[k] = v
+      if not assets[k]? and k isnt name
+        a = v.get '$assets'
+        if a[name]?
+          delete a[name]
+        assets[k] = a
+
+    # Store injectors in ordered array for ordered routing
+    __injectors = injector.get '__injectors'
+    for v in plugin.injector.get '__injectors'
+      if v not in __injectors
+        __injectors.push v
+
+    # Store routes in ordered array for ordered route loading
+    if mounts.length > 0
+      __routes = injector.get '__routes'
+      for r in plugin.injector.get('__routes')
+        if r not in __routes
+          __routes.push r
+      injector.register '__routes', __routes
+
+    return
+
+  # Register modules
+  injector.register '$express', -> express
+  injector.register '$dependable', -> dependable
+  injector.register '$glob', -> glob
+  injector.register '$lodash', -> _
+
+  # Register injectors and routes
+  injectors = {}
+  injectors[name] = injector
+  injector.register '$injectors', injectors
+  __injectors = [injector]
+  injector.register '__injectors', __injectors
+  __routes = []
+  injector.register '__routes', __routes
+  injector.register '__shared', false
 
   # Basic configuration
   config = {}
@@ -57,17 +135,16 @@ module.exports = (projectdir, appdir, appext, config, built) ->
     caseSensitive: false
     strict: false
 
-  # Default assets configuration
+  # Assets configuration
   config.assets = {}
   config.assets.expiry = 0
   if process.env.NODE_ENV is 'production'
     config.assets.expiry = 1000 * 3600 * 24 * 365
 
-  # Default middleware configuration
+  # Middleware configuration
   config.middleware = {}
   config.middleware['vhosted'] = true
   config.middleware['compression'] = level: 9
-  config.middleware['morgan'] = 'dev'
   config.middleware['cookie-parser'] = true
   config.middleware['body-parser'] = true
   config.middleware['express-validator'] = true
@@ -80,412 +157,449 @@ module.exports = (projectdir, appdir, appext, config, built) ->
   config.middleware['serve-favicon'] = false
   config.middleware['errorhandler'] = true
   if process.env.NODE_ENV is 'production'
-    config.middleware['morgan'] = false
     config.middleware['errorhandler'] = false
 
   # Default views configuration
   config.views = {}
-  config.views.dir = path.resolve "#{appdir}/"
+  config.views.dir = path.resolve "#{appDir}/"
   if process.env.NODE_ENV is 'production'
     config.views.cache = true
   else
     config.views.cache = false
   config.views.callback = (html) -> return html
   config.views.extension = 'html'
-  mean.register '$config', config
+  injector.register '$config', config
 
   # Config chainware
-  if chainware.config?
-    mean.resolve chainware.config
+  if chainware?.config?
+    injector.resolve chainware.config
 
-  # Override config
-  config = mean.get '$config'
-  if overrides?
-    defaults = _.partialRight(_.assign, (a, b) ->
-      if not a?
-        return b
-      return a
-    )
-    config = defaults(overrides, config)
-
-  # Fix mount path
+  # Ensure trailing slash in mount path
   if config.mount[config.mount.length - 1] isnt '/'
     config.mount += '/'
 
-  # Register secret
-  if config.middleware['cookie-parser']
-    config.middleware['cookie-parser'] = config.secret
-  if config.middleware['express-session']
-    config.middleware['express-session']['secret'] = config.secret
-
-  # Database
-  if _.size(config.database.options) > 0
-    connection = mongoose.createConnection config.database.uri, config.database.options
-  else
-    connection = mongoose.createConnection config.database.uri
-  mean.register '$connection', connection
-  mean.register '$mongoose', mongoose
-
-  # Configure session store
-  if config.middleware['express-session'] and \
-    config.middleware['connect-mongo']
-      if _.isBoolean config.middleware['connect-mongo']
-        config.middleware['connect-mongo'] = {}
-      config.middleware['connect-mongo']['db'] = connection.db
-      store = new (require('connect-mongo')(require('express-session')))(
-        config.middleware['connect-mongo']
-      )
-      if _.isBoolean config.middleware['express-session']
-        config.middleware['express-session'] = {}
-      config.middleware['express-session']['store'] = store
-
-  # Before app chainware
-  if chainware.beforeApp?
-    mean.resolve chainware.beforeApp
+  # Register assets
+  assetFile = path.join publicDir, 'assets.json'
+  if fs.existsSync assetFile
+    assets = JSON.parse(fs.readFileSync(assetFile))
+    injector.register '$assets', assets
 
   # Create app
   app = express()
+  injector.register '$app', -> app
 
-  if config.router.strict
-    app.enable 'strict routing'
-  if config.router.caseSensitive
-    app.enable 'case sensitive routing'
+  # Configure locals
+  assets = injector.get '$assets'
+  app.locals.assets = assets
+  app.locals.mount = config.mount
+  app.locals.name = name
 
-  mean.register '$app', -> app
-
-  # Set default view renderer
-  if not config.views.render?
-    if config.views.cache
-      engine = ect
-        watch: true
-        cache: true
-        root: config.views.dir
-        ext: ".#{config.views.extension}"
-      app.locals.cache = 'memory'
-    else
-      engine = ect
-        watch: false
-        cache: false
-        root: config.views.dir
-        ext: ".#{config.views.extension}"
-      app.locals.cache = false
-    config.views.render = engine.render
-
-  # Express view settings
-  app.set 'view cache', config.views.cache
-  app.set 'views', config.views.dir
-
-  # Load views
-  views = {}
-  config.views = postrender(
-    config.views,
-    config.views.callback,
-    'render'
-  )
-  app.set 'view engine', config.views.extension
-  app.engine config.views.extension, config.views.render
-  globdir = path.resolve "#{config.views.dir}/**/*.#{config.views.extension}"
-  glob globdir, sync: true, (err, files) ->
-    if err
-      console.log err
-      process.exit 0
-    for file in files
-      renderer = new utils.Renderer(
-        file,
-        config.views.render,
-        config.views.cache,
-        app.locals
-      )
-      utils.aggregate views, file, config.views.dir, renderer
-  mean.register '$views', views
-
-  dir = path.resolve appdir
-  schemas = {}
-  models = {}
-  controllers = {}
-  constants = {}
-  variables = {}
-  routes = []
-  glob "#{dir}/**/*#{appext}", sync: true, (err, files) ->
-    for file in files
-      excluded = path.relative(dir, file)
-      if excluded is "server#{appext}" or excluded is "chainware#{appext}"
-        continue
-      mdl = require file
-      if mdl.schema?
-        _.forOwn mdl.schema, (prop, key) ->
-          mean.register key, prop
-          schemas[key] = prop
-      if mdl.model?
-        _.forOwn mdl.model, (prop, key) ->
-          mean.register key, prop
-          models[key] = prop
-      if mdl.controller?
-        _.forOwn mdl.controller, (prop, key) ->
-          mean.register key, prop
-          controllers[key] = prop
-      if mdl.constant?
-        _.forOwn mdl.constant, (prop, key) ->
-          mean.register key, prop
-          constants[key] = prop
-      if mdl.variable?
-        _.forOwn mdl.variable, (prop, key) ->
-          mean.register key, prop
-          variables[key] = prop
-      if mdl.route?
-        routes.push mdl.route
-  for key, value of constants
-    fn = (instance) ->
-      -> instance
-    mean.register key, fn(mean.get key)
-  for key, value of schemas
-    fn = (instance) ->
-      -> instance
-    mean.register key, fn(mean.get key)
-  for key, value of models
-    fn = (instance) ->
-      -> instance
-    mean.register key, fn(mean.get key)
-  for key, value of controllers
-    fn = (instance) ->
-      -> instance
-    mean.register key, fn(mean.get key)
-
-  # Load plugins
-  plugins = {}
-  if built
-    vhosts = mean.resolve require(path.join projectdir, "vhosts#{appext}")
-    regex = /\//
-    for vhost in vhosts
-      if vhost.plugin?
-        vhost = _.assign(
-          paths: []
-        , vhost)
-        if not _.isArray vhost.paths
-          vhost.paths = [vhost.paths]
-        if vhost.paths.length is 0
-          vhost.paths.push '/'
-        if regex.test vhost.plugin
-          vhost.plugin = path.join(relprojectdir, vhost.plugin)
-        else
-          vhost.plugin = path.join(relprojectdir, 'node_modules', vhost.plugin)
-        plugin = require(vhost.plugin)(mean, vhost.config)
-        plugins[plugin.appname] = {}
-        plugins[plugin.appname]['router'] = plugin.router
-        plugins[plugin.appname]['paths'] = vhost.paths
-
-  # Before middleware chainware
-  if chainware.beforeMiddleware?
-    mean.resolve chainware.beforeMiddleware
-
-  # Register assets
-  assets = mean.get('$assets')
-  assetfile = path.join projectdir, '.assets'
-  if fs.existsSync assetfile
-    assets[appname] = JSON.parse(fs.readFileSync(assetfile))
-  else
-    assets[appname] =
-      js: {}
-      css: {}
-      other: {}
-
-  locals = {}
-  locals.name = appname
-  locals.assets = assets
-  locals.mount = config.mount
-  locals[appname] = {}
-  locals[appname].name = appname
-  locals[appname].assets = assets[appname]
-  locals[appname].namespace = (str) ->
-    return "#{locals[appname].modulename}.#{str}"
-  locals[appname].asset = (str) ->
-    return "public/#{str}"
-  locals[appname].resource = (str) ->
-    return "public/js/#{str}"
-  for k of mean.get('$plugins')
-    locals[k] = {}
-    locals[k].name = k
-    locals[k].assets = assets[k]
-    locals[k].namespace = (str) ->
-      return "#{locals[k].modulename}.#{str}"
-    locals[k].asset = (str) ->
-      return "public/plugins/#{k}/#{str}"
-    locals[k].resource = (str) ->
-      return "public/plugins/#{k}/js/#{str}"
-  app.use (req, res, next) ->
-    res.removeHeader 'X-Powered-By'
-    res.locals['mean'] = locals
-    next()
-
-  # Compression
-  if chainware.beforeCompression?
-    mean.resolve chainware.beforeCompression
-  if config.middleware['compression']
-    if not _.isBoolean config.middleware['compression']
-      app.use require('compression')(config.middleware['compression'])
-    else
-      app.use require('compression')()
-  if chainware.afterCompression?
-    mean.resolve chainware.afterCompression
-
-  # Morgan
-  if chainware.beforeMorgan?
-    mean.resolve chainware.beforeMorgan
-  if config.middleware['morgan']
-    if not _.isBoolean config.middleware['morgan']
-      app.use require('morgan')(config.middleware['morgan'])
-    else
-      app.use require('morgan')()
-  if chainware.afterMorgan?
-    mean.resolve chainware.afterMorgan
-
-  # Serve favicon
-  if chainware.beforeServeFavicon?
-    mean.resolve chainware.beforeServeFavicon
-  if config.middleware['serve-favicon']
-    if not _.isBoolean config.middleware['serve-favicon']
-      app.use require('serve-favicon')(
-        "#{publicdir}/favicon.ico",
-        config.middleware['serve-favicon']
-      )
-    else
-      app.use require('serve-favicon')("#{publicdir}/favicon.ico")
-  if chainware.afterServeFavicon?
-    mean.resolve chainware.afterServeFavicon
-
-  # Express static
-  if chainware.beforeStatic?
-    mean.resolve chainware.beforeStatic
-  app.use '/public', express.static(path.join(projectdir, 'public'),
-    maxAge: config.assets.expiry)
-  if chainware.afterStatic?
-    mean.resolve chainware.afterStatic
-
-  # Cookie parser
-  if chainware.beforeCookieParser?
-    mean.resolve chainware.beforeCookieParser
-  if config.middleware['cookie-parser']
-    if not _.isBoolean config.middleware['cookie-parser']
-      app.use require('cookie-parser')(config.middleware['cookie-parser'])
-    else
-      app.use require('cookie-parser')()
-  if chainware.afterCookieParser?
-    mean.resolve chainware.afterCookieParser
-
-  # Body parser
-  if chainware.beforeBodyParser?
-    mean.resolve chainware.beforeBodyParser
-  if config.middleware['body-parser']
-    app.use require('body-parser')()
-  if chainware.afterBodyParser?
-    mean.resolve chainware.afterBodyParser
-
-  # Express validator
-  if chainware.beforeExpressValidator?
-    mean.resolve chainware.beforeExpressValidator
-  if config.middleware['express-validator']
-    if not _.isBoolean config.middleware['express-validator']
-      app.use require('express-validator')(
-        config.middleware['express-validator']
-      )
-    else
-      app.use require('express-validator')()
-  if chainware.afterExpressValidator?
-    mean.resolve chainware.afterExpressValidator
-
-  # Method override
-  if chainware.beforeMethodOverride?
-    mean.resolve chainware.beforeMethodOverride
-  if config.middleware['method-override']
-    app.use require('method-override')()
-  if chainware.afterMethodOverride?
-    mean.resolve chainware.afterMethodOverride
-
-  # Express session
-  if chainware.beforeExpressSession?
-    mean.resolve chainware.beforeExpressSession
-  if config.middleware['express-session']
-    if not _.isBoolean config.middleware['express-session']
-      app.use require('express-session')(config.middleware['express-session'])
-    else
-      app.use require('express-session')()
-  if chainware.afterExpressSession?
-    mean.resolve chainware.afterExpressSession
-
-  # View helpers
-  if chainware.beforeViewHelpers?
-    mean.resolve chainware.beforeViewHelpers
-  if config.middleware['view-helpers']
-    app.use require('view-helpers')(appname)
-  if chainware.afterViewHelpers?
-    mean.resolve chainware.afterViewHelpers
-
-  # Connect flash
-  if chainware.beforeConnectFlash?
-    mean.resolve chainware.beforeConnectFlash
-  if config.middleware['connect-flash']
-    app.use require('connect-flash')()
-  if chainware.afterConnectFlash?
-    mean.resolve chainware.afterConnectFlash
-
-  # Before routing chainware
+  # Register router and route
   router = express.Router(config.router)
-  mean.register '$router', -> router
-  if chainware.beforeRouting?
-    mean.resolve chainware.beforeRouting
+  injector.register '$router', -> router
+  injector.register '$route', -> express.Router(config.router)
 
-  # Serve MEAN data to client
-  router.get '/mean.json', (req, res) ->
-    obj = {}
-    obj['name'] = appname.replace(/[.-_]/g, '.')
-    obj['mount'] = config.mount
-    obj['assets'] = assets
-    res.json obj
+  # Load dependencies
+  if chainware?.dependencies?
+    injector.resolve chainware.dependencies
 
-  # Before plugin routing chainware
-  if chainware.beforePluginsRouting?
-    mean.resolve chainware.beforePluginsRouting
+  # Resolve routes
+  routed = false
+  route = ->
+    if routed
+      return
+    routed = true
+    if chainware?.routes?
+      injector.resolve chainware.routes
 
-  # Load plugin routes
-  for n, obj of plugins
-    for p in obj.paths
-      app.use p, obj.router
+  # Load app
+  loaded = false
+  load = ->
+    if loaded
+      return
+    loaded = true
 
-  # After plugins routing chainware
-  if chainware.afterPluginsRouting?
-    mean.resolve chainware.afterPluginsRouting
+    __shared = injector.get '__shared'
+    __routes = injector.get '__routes'
+    __routes.push route # add route chainware
 
-  # Load routes
-  for route in routes
-    r = express.Router(config.router)
-    mount = mean.resolve {'$route': r}, route
-    if _.isString mount
-      router.use mount, r
-    else
-      router.use '/', r
-  app.use router
+    # Before load chainware
+    if chainware?.beforeLoad?
+      injector.resolve chainware.beforeLoad
 
-  # After routing chainware
-  if chainware.afterRouting?
-    mean.resolve chainware.afterRouting
+    # Register secret
+    if config.middleware['cookie-parser']
+      config.middleware['cookie-parser'] = config.secret
+    if config.middleware['express-session']
+      config.middleware['express-session']['secret'] = config.secret
 
-  # After middleware chainware
-  if chainware.afterMiddleware?
-    mean.resolve chainware.afterMiddleware
+    # Register event emitter
+    emitter = new events.EventEmitter()
+    injector.register '$emitter', -> emitter
 
-  # Error handler
-  if chainware.beforeErrorHandler?
-    mean.resolve chainware.beforeErrorHandler
-  if config.middleware['errorhandler']
-    app.use require('errorhandler')()
-  if chainware.afterErrorHandler?
-    mean.resolve chainware.afterErrorHandler
+    # Database
+    if not __shared
+      connected = ->
+        emitter.emit 'mongoose-connected'
+      if _.size(config.database.options) > 0
+        connection = mongoose.createConnection(
+          config.database.uri,
+          config.database.options,
+          connected
+        )
+      else
+        connection = mongoose.createConnection(
+          config.database.uri,
+          connected
+        )
+      injector.register '$connection', -> connection
+      injector.register '$mongoose', -> mongoose
 
-  # After app chainware
-  if chainware.afterApp?
-    mean.resolve chainware.afterApp
+    # Plugins chainware
+    if chainware?.plugins
+      injector.resolve chainware.plugins
+    __injectors.push(__injectors.shift())
 
-  return mean
+    # Set default view renderer
+    if not config.views.render?
+      if config.views.cache
+        engine = new swig.Swig
+          loader: swig.loaders.fs(config.views.dir)
+          cache: 'memory'
+        app.locals.cache = 'memory'
+      else
+        engine = new swig.Swig
+          loader: swig.loaders.fs(config.views.dir)
+          cache: false
+        app.locals.cache = false
+      config.views.render = engine.renderFile
 
-module.exports.grunt = (projectdir, grunt) ->
-  require('./grunt')(projectdir, grunt)
+    # Express view settings
+    app.set 'view cache', config.views.cache
+    app.set 'views', config.views.dir
+
+    # Load views
+    views = {}
+    config.views = postrender(
+      config.views,
+      config.views.callback,
+      'render'
+    )
+    app.set 'view engine', config.views.extension
+    app.engine config.views.extension, config.views.render
+    globDir = path.resolve "#{config.views.dir}/**/*.#{config.views.extension}"
+    glob globDir, sync: true, (err, files) ->
+      if err
+        console.log err
+        process.exit 0
+      for file in files
+        renderer = new utils.Renderer(
+          file,
+          config.views.render,
+          config.views.cache,
+          app.locals
+        )
+        utils.aggregate views, file, config.views.dir, renderer
+
+    # Register views
+    for k, v of injectors
+      if k isnt name
+        views[k] = v.get '$views'
+    injector.register '$views', views
+
+    # Resolve components
+    resolve = (prop, key) ->
+      filter = (instance) -> instance
+      wrap = (instance) ->
+        -> instance
+      get = (instance) ->
+        ->
+          for k, v of injectors
+            if instance.substring(0, k.length).replace('.', '-') is k
+              r = instance.substring(k.length + 1)
+              if r.length > 0
+                return v.get r
+          injector.get instance
+      construct = (key, instance, args) ->
+        ->
+          injector.register key, construct(key, instance, args)
+          instance.construct(args)
+      create = (key, instance, args) ->
+        ->
+          injector.register key, create(key, instance, args)
+          injector.get instance, args
+      if prop.singleton?
+        singleton = prop.singleton
+      else
+        singleton = true
+      if _.isFunction prop
+        if prop.inject? or prop.name.length > 0
+          overrides = {}
+          match = prop.toString().match /function.*?\(([\s\S]*?)\)/
+          if not match? then throw new Error "could not parse function arguments: #{prop?.toString()}"
+          args = match[1].split(",").filter(filter).map((str) -> str.trim())
+          if not prop.inject?
+            prop.inject = args
+          if prop.name.length > 0
+            prop.construct = (a) ->
+              fconstructor = prop
+              nconstructor = () ->
+                fconstructor.apply(@, a)
+              nconstructor.prototype = fconstructor.prototype
+              return new nconstructor()
+          for i, r of args
+            overrides[r] = get(prop.inject[i])
+      if prop.inject?
+        if prop.name.length > 0
+          injector.register "__#{key}", wrap(prop)
+        else
+          injector.register "__#{key}", prop
+        injector.register key, () ->
+          if prop.name.length > 0
+            args = []
+            for l, e of overrides
+              args.push e()
+            if singleton
+              res = injector.get("__#{key}").construct(args)
+              injector.register key, wrap(res)
+            else
+              res = construct(key, injector.get("__#{key}"), args)()
+          else
+            for l, e of overrides
+              overrides[l] = e()
+            if singleton
+              res = injector.get "__#{key}", overrides
+              injector.register key, wrap(res)
+            else
+              res = create(key, "__#{key}", overrides)()
+          return res
+      else
+        if singleton
+          injector.register key, prop
+        else
+          injector.register "__#{key}", prop
+          injector.register key, () ->
+            create(key, "__#{key}", {})()
+    dir = path.resolve appDir
+    glob "#{dir}/**/*#{ext}", sync: true, (err, files) ->
+      for file in files
+        excluded = path.relative(dir, file)
+        if excluded is "bootstrap#{ext}" or excluded is "chainware#{ext}"
+          continue
+        mdl = require file
+        _.forOwn mdl, (prop, key) ->
+          if prop.namespace?
+            key = "#{prop.namespace}.#{key}"
+          resolve prop, key
+
+    # Pass components to other injectors
+    for k, v of injectors
+      if k isnt name
+        i = v.get '$injectors'
+        i[name] = injector
+
+    # After load chainware
+    if chainware?.afterLoad?
+      injector.resolve chainware.afterLoad
+
+  # Init app
+  init = ->
+    load()
+    connection = injector.get '$connection'
+
+    # Before init chainware
+    if chainware?.beforeInit?
+      injector.resolve chainware.beforeInit
+
+    # Configure session store
+    if pkg.dependencies['connect-mongo']? and pkg.dependencies['express-session']?
+      if config.middleware['express-session'] and \
+        config.middleware['connect-mongo']
+          if _.isBoolean config.middleware['connect-mongo']
+            config.middleware['connect-mongo'] = {}
+          config.middleware['connect-mongo']['db'] = connection.db
+          cm = require("#{relativeProjectDir}/node_modules/connect-mongo")
+          es = require("#{relativeProjectDir}/node_modules/express-session")
+          store = new (cm(es))(config.middleware['connect-mongo'])
+          if _.isBoolean config.middleware['express-session']
+            config.middleware['express-session'] = {}
+          config.middleware['express-session']['store'] = store
+
+    # Configure router
+    if config.router.strict
+      app.enable 'strict routing'
+    if config.router.caseSensitive
+      app.enable 'case sensitive routing'
+
+    # Before middleware chainware
+    if chainware?.beforeMiddleware?
+      injector.resolve chainware.beforeMiddleware
+
+    # Modify headers
+    app.use (req, res, next) ->
+      res.removeHeader 'X-Powered-By'
+      next()
+
+    # Compression
+    if pkg.dependencies['compression']?
+      if chainware?.beforeCompression?
+        injector.resolve chainware.beforeCompression
+      if config.middleware['compression']
+        m = require("#{relativeProjectDir}/node_modules/compression")
+        if not _.isBoolean config.middleware['compression']
+          app.use m(config.middleware['compression'])
+        else
+          app.use m()
+      if chainware?.afterCompression?
+        injector.resolve chainware.afterCompression
+
+    # Serve favicon
+    if pkg.dependencies['serve-favicon']?
+      if chainware?.beforeServeFavicon?
+        injector.resolve chainware.beforeServeFavicon
+      if config.middleware['serve-favicon']
+        m = require("#{relativeProjectDir}/node_modules/serve-favicon")
+        if not _.isBoolean config.middleware['serve-favicon']
+          app.use m(
+            "#{publicDir}/favicon.ico",
+            config.middleware['serve-favicon']
+          )
+        else
+          app.use m("#{publicDir}/favicon.ico")
+      if chainware?.afterServeFavicon?
+        injector.resolve chainware.afterServeFavicon
+
+    # Express static
+    if chainware?.beforeStatic?
+      injector.resolve chainware.beforeStatic
+
+    for k, v of injectors
+      dir = v.get '$dir'
+      name = v.get '$name'
+      app.use "/public/#{name}", express.static(path.join(dir.project, "public/#{name}"),
+        maxAge: config.assets.expiry)
+
+    if chainware?.afterStatic?
+      injector.resolve chainware.afterStatic
+
+    # Cookie parser
+    if pkg.dependencies['cookie-parser']?
+      if chainware?.beforeCookieParser?
+        injector.resolve chainware.beforeCookieParser
+      if config.middleware['cookie-parser']
+        m = require("#{relativeProjectDir}/node_modules/cookie-parser")
+        if not _.isBoolean config.middleware['cookie-parser']
+          app.use m(config.middleware['cookie-parser'])
+        else
+          app.use m()
+      if chainware?.afterCookieParser?
+        injector.resolve chainware.afterCookieParser
+
+    # Body parser
+    if pkg.dependencies['body-parser']?
+      if chainware?.beforeBodyParser?
+        injector.resolve chainware.beforeBodyParser
+      if config.middleware['body-parser']
+        m = require("#{relativeProjectDir}/node_modules/body-parser")
+        app.use m()
+      if chainware?.afterBodyParser?
+        injector.resolve chainware.afterBodyParser
+
+    # Express validator
+    if pkg.dependencies['express-validator']?
+      if chainware?.beforeExpressValidator?
+        injector.resolve chainware.beforeExpressValidator
+      if config.middleware['express-validator']
+        m = require("#{relativeProjectDir}/node_modules/express-validator")
+        if not _.isBoolean config.middleware['express-validator']
+          app.use m(config.middleware['express-validator'])
+        else
+          app.use m()
+      if chainware?.afterExpressValidator?
+        injector.resolve chainware.afterExpressValidator
+
+    # Method override
+    if pkg.dependencies['method-override']?
+      if chainware?.beforeMethodOverride?
+        injector.resolve chainware.beforeMethodOverride
+      if config.middleware['method-override']
+        m = require("#{relativeProjectDir}/node_modules/method-override")
+        app.use m()
+      if chainware?.afterMethodOverride?
+        injector.resolve chainware.afterMethodOverride
+
+    # Express session
+    if pkg.dependencies['express-session']?
+      if chainware?.beforeExpressSession?
+        injector.resolve chainware.beforeExpressSession
+      if config.middleware['express-session']
+        m = require("#{relativeProjectDir}/node_modules/express-session")
+        if not _.isBoolean config.middleware['express-session']
+          app.use m(config.middleware['express-session'])
+        else
+          app.use m()
+      if chainware?.afterExpressSession?
+        injector.resolve chainware.afterExpressSession
+
+    # View helpers
+    if pkg.dependencies['view-helpers']?
+      if chainware?.beforeViewHelpers?
+        injector.resolve chainware.beforeViewHelpers
+      if config.middleware['view-helpers']
+        m = require("#{relativeProjectDir}/node_modules/view-helpers")
+        app.use m(name)
+      if chainware?.afterViewHelpers?
+        injector.resolve chainware.afterViewHelpers
+
+    # Connect flash
+    if pkg.dependencies['connect-flash']?
+      if chainware?.beforeConnectFlash?
+        injector.resolve chainware.beforeConnectFlash
+      if config.middleware['connect-flash']
+        m = require("#{relativeProjectDir}/node_modules/connect-flash")
+        app.use m()
+      if chainware?.afterConnectFlash?
+        injector.resolve chainware.afterConnectFlash
+
+    # Before routing chainware
+    if chainware?.beforeRouting?
+      injector.resolve chainware.beforeRouting
+
+    __routes = injector.get '__routes'
+    for r in __routes
+      r()
+
+    __injectors = injector.get '__injectors'
+    for v in __injectors
+      for mount in v.get '$mounts'
+        app.use mount, v.get '$router'
+
+    # After routing chainware
+    if chainware?.afterRouting?
+      injector.resolve chainware.afterRouting
+
+    # After middleware chainware
+    if chainware?.afterMiddleware?
+      injector.resolve chainware.afterMiddleware
+
+    # Error handler
+    if pkg.dependencies['errorhandler']?
+      if chainware?.beforeErrorHandler?
+        injector.resolve chainware.beforeErrorHandler
+      if config.middleware['errorhandler']
+        m = require("#{relativeProjectDir}/node_modules/errorhandler")
+        app.use m()
+      if chainware?.afterErrorHandler?
+        injector.resolve chainware.afterErrorHandler
+
+    # After init chainware
+    if chainware?.afterInit?
+      injector.resolve chainware.afterInit
+
+    return injector
+
+  return {
+    injector: injector
+    load: load
+    init: init
+  }

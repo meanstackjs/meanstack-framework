@@ -1,23 +1,42 @@
 path = require 'path'
+fs = require 'fs'
+vhosted = require 'vhosted'
 
-module.exports = (projectdir, appdir, appext, config, mean) ->
-  relappdir = path.relative(__dirname, appdir)
-  relprojectdir = path.relative(__dirname, projectdir)
+module.exports = ($dir, $ext, $config, $injector, $emitter, $env) ->
+  relativeAppDir = path.relative(__dirname, $dir.app)
 
-  if config.middleware['vhosted']
+  # Routing configuration
+  if $config.router.strict
+    server.enable 'strict routing'
+  if $config.router.caseSensitive
+    server.enable 'case sensitive routing'
+
+  # Bootstrap
+  boostrap = fs.existsSync "#{$dir.app}/bootstrap#{$ext}"
+  if bootstrap
+    bootstrap = require("#{relativeAppDir}/bootstrap")
+  if bootstrap and bootstrap.vhosts?
     server = require('express')()
-
-    # Routing configuration
-    if config.router.strict
-      server.enable 'strict routing'
-    if config.router.caseSensitive
-      server.enable 'case sensitive routing'
-
-    vhosted = require 'vhosted'
-    vhosts = mean.resolve require("#{relprojectdir}/vhosts#{appext}")
-    server = vhosted server, projectdir, vhosts
-    mean.register '$server', -> server
+    vhosts = $injector.resolve bootstrap.vhosts
+    server = vhosted server, $dir.project, vhosts
   else
-    mean.register '$server', -> mean.get '$app'
+    server = $injector.get '$app'
 
-  mean.resolve require("#{relappdir}/server")
+  $injector.register '$server', -> server
+
+  # Start server
+  listen = ->
+    if bootstrap and bootstrap.server?
+      server = $injector.resolve require("#{relativeAppDir}/bootstrap").server
+    else
+      http = require 'http'
+      port = process.env.PORT or $config.port
+      server = http.createServer(server).listen port, ->
+        console.log 'Server listening on port ' + port
+    server.on 'listening', ->
+      fs.writeFileSync "#{$dir.project}/.tmp/reload", 'reload'
+  if $env is 'production'
+    $emitter.on 'mongoose-connected', ->
+      listen()
+  else
+    listen()
