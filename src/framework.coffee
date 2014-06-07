@@ -6,8 +6,8 @@ swig = require 'swig'
 path = require 'path'
 glob = require 'glob'
 events = require 'events'
-fs = require 'fs'
 vhosted = require 'vhosted'
+fs = require 'fs'
 _ = require 'lodash'
 
 class Renderer
@@ -69,8 +69,8 @@ module.exports = (projectDir, appDir, ext) ->
     app: appDir
 
   # Load chainware if available
-  if fs.existsSync "#{appDir}/chainware#{ext}"
-    chainware = require("#{relativeAppDir}/chainware")
+  if fs.existsSync "#{appDir}/app#{ext}"
+    chainware = require("#{relativeAppDir}/app")
 
   # Register dependencies
   injector = dependable.container()
@@ -219,10 +219,9 @@ module.exports = (projectDir, appDir, ext) ->
     if routed
       return
     routed = true
-    if chainware?.dependencies?
-      injector.resolve chainware.dependencies
-    if chainware?.routes?
-      injector.resolve chainware.routes
+    # Main chainware
+    if chainware?.main?
+      injector.resolve chainware.main
 
   # Load app
   loaded = false
@@ -233,9 +232,9 @@ module.exports = (projectDir, appDir, ext) ->
 
     __shared = injector.get '__shared'
 
-    # Before load chainware
-    if chainware?.beforeLoad?
-      injector.resolve chainware.beforeLoad
+    # Load chainware
+    if chainware?.load?
+      injector.resolve chainware.load
 
     # Register secret
     if config.middleware['cookie-parser']
@@ -392,13 +391,20 @@ module.exports = (projectDir, appDir, ext) ->
     dir = path.resolve appDir
     glob "#{dir}/**/*#{ext}", sync: true, (err, files) ->
       for file in files
-        excluded = path.relative(dir, file)
-        if excluded is "bootstrap#{ext}" or excluded is "chainware#{ext}"
+        if path.relative(dir, file) is "app#{ext}"
           continue
         mdl = require file
+        if mdl.namespace?
+          ns = mdl.namespace
+        else
+          ns = ''
+        if mdl.register? and mdl.register is false
+          continue
         _.forOwn mdl, (prop, key) ->
-          if prop.exclude? and prop.exclude is true
+          if prop.register? and prop.register is false
             return
+          if ns.length > 0
+            key = "#{ns}.#{key}"
           if prop.namespace?
             key = "#{prop.namespace}.#{key}"
           resolve prop, key
@@ -409,9 +415,9 @@ module.exports = (projectDir, appDir, ext) ->
         i = v.get '$injectors'
         i[name] = injector
 
-    # After load chainware
-    if chainware?.afterLoad?
-      injector.resolve chainware.afterLoad
+    # Init chainware
+    if chainware?.init?
+      injector.resolve chainware.init
 
   # Init app
   initialized = false
@@ -420,10 +426,6 @@ module.exports = (projectDir, appDir, ext) ->
       return
     initialized = true
     load()
-
-    # Before init chainware
-    if chainware?.beforeInit?
-      injector.resolve chainware.beforeInit
 
     # Configure session store
     if pkg.dependencies['connect-mongo']? and pkg.dependencies['express-session']?
@@ -445,9 +447,9 @@ module.exports = (projectDir, appDir, ext) ->
     if config.router.caseSensitive
       app.enable 'case sensitive routing'
 
-    # Before middleware chainware
-    if chainware?.beforeMiddleware?
-      injector.resolve chainware.beforeMiddleware
+    # Middleware chainware
+    if chainware?.middleware?
+      injector.resolve chainware.middlware
 
     # Modify headers
     app.use (req, res, next) ->
@@ -455,21 +457,19 @@ module.exports = (projectDir, appDir, ext) ->
       next()
 
     # Compression
+    if chainware?['compression']?
+      injector.resolve chainware['compression']
     if pkg.dependencies['compression']? and config.middleware['compression']
-      if chainware?.beforeCompression?
-        injector.resolve chainware.beforeCompression
       m = require("#{relativeProjectDir}/node_modules/compression")
       if not _.isBoolean config.middleware['compression']
         app.use m(config.middleware['compression'])
       else
         app.use m()
-      if chainware?.afterCompression?
-        injector.resolve chainware.afterCompression
 
     # Serve favicon
+    if chainware?['serve-favicon']?
+      injector.resolve chainware['compression']
     if pkg.dependencies['serve-favicon']? and config.middleware['serve-favicon']
-      if chainware?.beforeServeFavicon?
-        injector.resolve chainware.beforeServeFavicon
       m = require("#{relativeProjectDir}/node_modules/serve-favicon")
       if not _.isBoolean config.middleware['serve-favicon']
         app.use m(
@@ -478,12 +478,10 @@ module.exports = (projectDir, appDir, ext) ->
         )
       else
         app.use m("#{publicDir}/favicon.ico")
-      if chainware?.afterServeFavicon?
-        injector.resolve chainware.afterServeFavicon
 
     # Express static
-    if chainware?.beforeStatic?
-      injector.resolve chainware.beforeStatic
+    if chainware?.static?
+      injector.resolve chainware.static
 
     for k, v of injectors
       dir = v.get '$dir'
@@ -491,80 +489,67 @@ module.exports = (projectDir, appDir, ext) ->
       app.use "/public/#{name}", express.static(dir.public,
         maxAge: config.static.expiry)
 
-    if chainware?.afterStatic?
-      injector.resolve chainware.afterStatic
-
     # Cookie parser
+    if chainware?['cookie-parser']?
+      injector.resolve chainware['cookie-parser']
     if pkg.dependencies['cookie-parser']? and config.middleware['cookie-parser']
-      if chainware?.beforeCookieParser?
-        injector.resolve chainware.beforeCookieParser
       m = require("#{relativeProjectDir}/node_modules/cookie-parser")
       if not _.isBoolean config.middleware['cookie-parser']
         app.use m(config.middleware['cookie-parser'])
       else
         app.use m()
-      if chainware?.afterCookieParser?
-        injector.resolve chainware.afterCookieParser
 
     # Body parser
+    if chainware?['body-parser']?
+      injector.resolve chainware['body-parser']
     if pkg.dependencies['body-parser']? and config.middleware['body-parser']
-      if chainware?.beforeBodyParser?
-        injector.resolve chainware.beforeBodyParser
       m = require("#{relativeProjectDir}/node_modules/body-parser")
       app.use m()
-      if chainware?.afterBodyParser?
-        injector.resolve chainware.afterBodyParser
 
     # Express validator
+    if chainware?['express-validator']?
+      injector.resolve chainware['express-validator']
     if pkg.dependencies['express-validator']? and config.middleware['express-validator']
-      if chainware?.beforeExpressValidator?
-        injector.resolve chainware.beforeExpressValidator
       m = require("#{relativeProjectDir}/node_modules/express-validator")
       if not _.isBoolean config.middleware['express-validator']
         app.use m(config.middleware['express-validator'])
       else
         app.use m()
-      if chainware?.afterExpressValidator?
-        injector.resolve chainware.afterExpressValidator
 
     # Method override
+    if chainware?['method-override']?
+      injector.resolve chainware['method-override']
     if pkg.dependencies['method-override']? and config.middleware['method-override']
-      if chainware?.beforeMethodOverride?
-        injector.resolve chainware.beforeMethodOverride
       m = require("#{relativeProjectDir}/node_modules/method-override")
       app.use m()
-      if chainware?.afterMethodOverride?
-        injector.resolve chainware.afterMethodOverride
 
     # Express session
+    if chainware?['express-session']?
+      injector.resolve chainware['express-session']
     if pkg.dependencies['express-session']? and config.middleware['express-session']
-      if chainware?.beforeExpressSession?
-        injector.resolve chainware.beforeExpressSession
       m = require("#{relativeProjectDir}/node_modules/express-session")
       if not _.isBoolean config.middleware['express-session']
         app.use m(config.middleware['express-session'])
       else
         app.use m()
-      if chainware?.afterExpressSession?
-        injector.resolve chainware.afterExpressSession
 
     # View helpers
+    if chainware?['view-helpers']?
+      injector.resolve chainware['view-helpers']
     if pkg.dependencies['view-helpers']? and config.middleware['view-helpers']
-      if chainware?.beforeViewHelpers?
-        injector.resolve chainware.beforeViewHelpers
       m = require("#{relativeProjectDir}/node_modules/view-helpers")
       app.use m(name)
-      if chainware?.afterViewHelpers?
-        injector.resolve chainware.afterViewHelpers
 
     # Connect flash
+    if chainware?['connect-flash']?
+      injector.resolve chainware['connect-flash']
     if pkg.dependencies['connect-flash']? and config.middleware['connect-flash']
-      if chainware?.beforeConnectFlash?
-        injector.resolve chainware.beforeConnectFlash
       m = require("#{relativeProjectDir}/node_modules/connect-flash")
       app.use m()
-      if chainware?.afterConnectFlash?
-        injector.resolve chainware.afterConnectFlash
+
+    # Dependencies chainware
+    if chainware?.dependencies?
+      injector.resolve chainware.dependencies
 
     # Resolve routes
     for k, v of injectors
@@ -572,22 +557,16 @@ module.exports = (projectDir, appDir, ext) ->
     mount = injector.get '$mount'
     app.use mount, injector.get '$router'
 
-    # After middleware chainware
-    if chainware?.afterMiddleware?
-      injector.resolve chainware.afterMiddleware
-
     # Error handler
+    if chainware?['errorhandler']?
+      injector.resolve chainware['errorhandler']
     if pkg.dependencies['errorhandler']? and config.middleware['errorhandler']
-      if chainware?.beforeErrorHandler?
-        injector.resolve chainware.beforeErrorHandler
       m = require("#{relativeProjectDir}/node_modules/errorhandler")
       app.use m()
-      if chainware?.afterErrorHandler?
-        injector.resolve chainware.afterErrorHandler
 
-    # After init chainware
-    if chainware?.afterInit?
-      injector.resolve chainware.afterInit
+    # Run chainware
+    if chainware?.run?
+      injector.resolve chainware.run
 
     return injector
 
@@ -607,9 +586,9 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
     server.enable 'case sensitive routing'
 
   # Bootstrap
-  bootstrap = fs.existsSync "#{$dir.app}/bootstrap#{$ext}"
+  bootstrap = fs.existsSync "#{$dir.app}/app#{$ext}"
   if bootstrap
-    bootstrap = require("#{relativeAppDir}/bootstrap")
+    bootstrap = require("#{relativeAppDir}/app")
   if bootstrap and bootstrap.vhosts?
     server = require('express')()
     vhosts = $injector.resolve bootstrap.vhosts
@@ -622,7 +601,7 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
   # Start server
   listen = ->
     if bootstrap and bootstrap.server?
-      server = $injector.resolve require("#{relativeAppDir}/bootstrap").server
+      server = $injector.resolve require("#{relativeAppDir}/app").server
     else
       http = require 'http'
       port = process.env.PORT or $config.port
