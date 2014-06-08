@@ -1,8 +1,5 @@
-express = require 'express'
-mongoose = require 'mongoose'
 dependable = require 'dependable'
-postrender = require 'express-postrender'
-swig = require 'swig'
+postrender = require 'postrender'
 path = require 'path'
 glob = require 'glob'
 events = require 'events'
@@ -72,11 +69,34 @@ module.exports = (projectDir, appDir, ext) ->
   if fs.existsSync "#{appDir}/app#{ext}"
     chainware = require("#{relativeAppDir}/app")
 
-  # Register dependencies
+  # Create injector
   injector = dependable.container()
+
+  # Register mongoose
+  if pkg.dependencies?['mongoose']?
+    mongoose = require("#{relativeProjectDir}/node_modules/mongoose")
+    injector.register '$mongoose', -> mongoose
+
+  # Register swig
+  if pkg.dependencies?['swig']?
+    swig = require("#{relativeProjectDir}/node_modules/swig")
+    injector.register '$swig', -> swig
+
+  # Register express
+  if pkg.dependencies?['express']?
+    express = require("#{relativeProjectDir}/node_modules/express")
+    injector.register '$express', -> express
+
+  # Register modules
+  injector.register '$dependable', -> dependable
+  injector.register '$glob', -> glob
+  injector.register '$lodash', -> _
+
+  # Register dependencies
   injector.register '$injector', injector
   injector.register '$env', process.env.NODE_ENV
   injector.register '$dir', dir
+  injector.register '$pkg', pkg
   injector.register '$ext', ext
   injector.register '$name', name
   injector.register '$assets',
@@ -96,8 +116,9 @@ module.exports = (projectDir, appDir, ext) ->
       # Share database connection
       if not shared? or shared is true
         plugin.injector.register '__shared', true
-        plugin.injector.register '$connection', -> injector.get('$connection')
-        plugin.injector.register '$mongoose', -> injector.get('$mongoose')
+        if mongoose?
+          plugin.injector.register '$connection', -> injector.get('$connection')
+          plugin.injector.register '$mongoose', -> injector.get('$mongoose')
 
       # Pass assets to plugin
       assets = injector.get '$assets'
@@ -122,12 +143,6 @@ module.exports = (projectDir, appDir, ext) ->
       return
     get: (plugin) ->
       injectors[plugin].get('$router')
-
-  # Register modules
-  injector.register '$express', -> express
-  injector.register '$dependable', -> dependable
-  injector.register '$glob', -> glob
-  injector.register '$lodash', -> _
 
   # Register injectors and routes
   injectors = {}
@@ -197,21 +212,18 @@ module.exports = (projectDir, appDir, ext) ->
   if fs.existsSync assetFile
     assets = JSON.parse(fs.readFileSync(assetFile))
     injector.register '$assets', assets
+  assets = injector.get '$assets'
 
   # Create app
-  app = express()
-  injector.register '$app', -> app
-
-  # Configure locals
-  assets = injector.get '$assets'
-  app.locals.assets = assets
-  app.locals.mount = config.mount
-  app.locals.name = name
-
-  # Register router and route
-  router = express.Router(config.router)
-  injector.register '$router', -> router
-  injector.register '$route', -> express.Router(config.router)
+  if express?
+    app = express()
+    injector.register '$app', -> app
+    app.locals.assets = assets
+    app.locals.mount = config.mount
+    app.locals.name = name
+    router = express.Router(config.router)
+    injector.register '$router', -> router
+    injector.register '$route', -> express.Router(config.router)
 
   # Resolve routes
   routed = false
@@ -249,71 +261,76 @@ module.exports = (projectDir, appDir, ext) ->
     # Database
     if not __shared
       connected = ->
-        emitter.emit 'mongoose-connected'
-      if _.size(config.database.options) > 0
-        connection = mongoose.createConnection(
-          config.database.uri,
-          config.database.options,
-          connected
-        )
+        emitter.emit 'connected'
+      if mongoose?
+        if _.size(config.database.options) > 0
+          connection = mongoose.createConnection(
+            config.database.uri,
+            config.database.options,
+            connected
+          )
+        else
+          connection = mongoose.createConnection(
+            config.database.uri,
+            connected
+          )
+        injector.register '$connection', -> connection
       else
-        connection = mongoose.createConnection(
-          config.database.uri,
-          connected
-        )
-      injector.register '$connection', -> connection
-      injector.register '$mongoose', -> mongoose
+        connected()
 
     # Plugins chainware
     if chainware?.plugins
       injector.resolve chainware.plugins
 
     # Set default view renderer
-    if not config.views.render?
-      if config.views.cache
-        engine = new swig.Swig
-          loader: swig.loaders.fs(config.views.dir)
-          cache: 'memory'
-        app.locals.cache = 'memory'
-      else
-        engine = new swig.Swig
-          loader: swig.loaders.fs(config.views.dir)
-          cache: false
-        app.locals.cache = false
-      config.views.render = engine.renderFile
+    if express?
+      if not config.views.render? and swig?
+        if config.views.cache
+          engine = new swig.Swig
+            loader: swig.loaders.fs(config.views.dir)
+            cache: 'memory'
+          app.locals.cache = 'memory'
+        else
+          engine = new swig.Swig
+            loader: swig.loaders.fs(config.views.dir)
+            cache: false
+          app.locals.cache = false
+        config.views.render = engine.renderFile
 
-    # Express view settings
-    app.set 'view cache', config.views.cache
-    app.set 'views', config.views.dir
+      if config.views.render?
 
-    # Load views
-    views = {}
-    config.views = postrender(
-      config.views,
-      config.views.callback,
-      'render'
-    )
-    app.set 'view engine', config.views.extension
-    app.engine config.views.extension, config.views.render
-    globDir = path.resolve "#{config.views.dir}/**/*.#{config.views.extension}"
-    glob globDir, sync: true, (err, files) ->
-      if err
-        console.log err
-        process.exit 0
-      for file in files
-        renderer = new Renderer(
-          file,
-          config.views.render,
-          config.views.cache,
-          app.locals
+        # Express view settings
+        app.set 'view cache', config.views.cache
+        app.set 'views', config.views.dir
+
+        # Load views
+        views = {}
+        config.views = postrender(
+          config.views,
+          config.views.callback,
+          'render'
         )
-        aggregate views, file, config.views.dir, renderer
+        app.set 'view engine', config.views.extension
+        app.engine config.views.extension, config.views.render
+        globDir = path.resolve "#{config.views.dir}/**/*.#{config.views.extension}"
+        glob globDir, sync: true, (err, files) ->
+          if err
+            console.log err
+            process.exit 0
+          for file in files
+            renderer = new Renderer(
+              file,
+              config.views.render,
+              config.views.cache,
+              app.locals
+            )
+            aggregate views, file, config.views.dir, renderer
 
-    # Register views
-    for k, v of injectors
-      if k isnt name
-        views[k] = v.get '$views'
-    injector.register '$views', views
+        # Register views
+        for k, v of injectors
+          if k isnt name
+            views[k] = v.get '$views'
+        injector.register '$views', views
 
     # Resolve components
     resolve = (prop, key) ->
@@ -427,8 +444,11 @@ module.exports = (projectDir, appDir, ext) ->
     initialized = true
     load()
 
+    if not express?
+      return injector
+
     # Configure session store
-    if pkg.dependencies['connect-mongo']? and pkg.dependencies['express-session']?
+    if pkg.dependencies?['connect-mongo']? and pkg.dependencies?['express-session']?
       if config.middleware['express-session'] and \
         config.middleware['connect-mongo']
           if _.isBoolean config.middleware['connect-mongo']
@@ -459,7 +479,7 @@ module.exports = (projectDir, appDir, ext) ->
     # Compression
     if chainware?['compression']?
       injector.resolve chainware['compression']
-    if pkg.dependencies['compression']? and config.middleware['compression']
+    if pkg.dependencies?['compression']? and config.middleware['compression']
       m = require("#{relativeProjectDir}/node_modules/compression")
       if not _.isBoolean config.middleware['compression']
         app.use m(config.middleware['compression'])
@@ -469,7 +489,7 @@ module.exports = (projectDir, appDir, ext) ->
     # Serve favicon
     if chainware?['serve-favicon']?
       injector.resolve chainware['compression']
-    if pkg.dependencies['serve-favicon']? and config.middleware['serve-favicon']
+    if pkg.dependencies?['serve-favicon']? and config.middleware['serve-favicon']
       m = require("#{relativeProjectDir}/node_modules/serve-favicon")
       if not _.isBoolean config.middleware['serve-favicon']
         app.use m(
@@ -492,7 +512,7 @@ module.exports = (projectDir, appDir, ext) ->
     # Cookie parser
     if chainware?['cookie-parser']?
       injector.resolve chainware['cookie-parser']
-    if pkg.dependencies['cookie-parser']? and config.middleware['cookie-parser']
+    if pkg.dependencies?['cookie-parser']? and config.middleware['cookie-parser']
       m = require("#{relativeProjectDir}/node_modules/cookie-parser")
       if not _.isBoolean config.middleware['cookie-parser']
         app.use m(config.middleware['cookie-parser'])
@@ -502,14 +522,14 @@ module.exports = (projectDir, appDir, ext) ->
     # Body parser
     if chainware?['body-parser']?
       injector.resolve chainware['body-parser']
-    if pkg.dependencies['body-parser']? and config.middleware['body-parser']
+    if pkg.dependencies?['body-parser']? and config.middleware['body-parser']
       m = require("#{relativeProjectDir}/node_modules/body-parser")
       app.use m()
 
     # Express validator
     if chainware?['express-validator']?
       injector.resolve chainware['express-validator']
-    if pkg.dependencies['express-validator']? and config.middleware['express-validator']
+    if pkg.dependencies?['express-validator']? and config.middleware['express-validator']
       m = require("#{relativeProjectDir}/node_modules/express-validator")
       if not _.isBoolean config.middleware['express-validator']
         app.use m(config.middleware['express-validator'])
@@ -519,14 +539,14 @@ module.exports = (projectDir, appDir, ext) ->
     # Method override
     if chainware?['method-override']?
       injector.resolve chainware['method-override']
-    if pkg.dependencies['method-override']? and config.middleware['method-override']
+    if pkg.dependencies?['method-override']? and config.middleware['method-override']
       m = require("#{relativeProjectDir}/node_modules/method-override")
       app.use m()
 
     # Express session
     if chainware?['express-session']?
       injector.resolve chainware['express-session']
-    if pkg.dependencies['express-session']? and config.middleware['express-session']
+    if pkg.dependencies?['express-session']? and config.middleware['express-session']
       m = require("#{relativeProjectDir}/node_modules/express-session")
       if not _.isBoolean config.middleware['express-session']
         app.use m(config.middleware['express-session'])
@@ -536,14 +556,14 @@ module.exports = (projectDir, appDir, ext) ->
     # View helpers
     if chainware?['view-helpers']?
       injector.resolve chainware['view-helpers']
-    if pkg.dependencies['view-helpers']? and config.middleware['view-helpers']
+    if pkg.dependencies?['view-helpers']? and config.middleware['view-helpers']
       m = require("#{relativeProjectDir}/node_modules/view-helpers")
       app.use m(name)
 
     # Connect flash
     if chainware?['connect-flash']?
       injector.resolve chainware['connect-flash']
-    if pkg.dependencies['connect-flash']? and config.middleware['connect-flash']
+    if pkg.dependencies?['connect-flash']? and config.middleware['connect-flash']
       m = require("#{relativeProjectDir}/node_modules/connect-flash")
       app.use m()
 
@@ -560,7 +580,7 @@ module.exports = (projectDir, appDir, ext) ->
     # Error handler
     if chainware?['errorhandler']?
       injector.resolve chainware['errorhandler']
-    if pkg.dependencies['errorhandler']? and config.middleware['errorhandler']
+    if pkg.dependencies?['errorhandler']? and config.middleware['errorhandler']
       m = require("#{relativeProjectDir}/node_modules/errorhandler")
       app.use m()
 
@@ -576,8 +596,17 @@ module.exports = (projectDir, appDir, ext) ->
     init: init
   }
 
-module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
+module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env, $pkg) ->
+  if not $pkg.dependencies?.express?
+    return
+
   relativeAppDir = path.relative(__dirname, $dir.app)
+
+  bootstrap = fs.existsSync "#{$dir.app}/app#{$ext}"
+  if bootstrap and bootstrap.vhosts?
+    server = $injector.get('$express')()
+  else
+    server = $injector.get '$app'
 
   # Routing configuration
   if $config.router.strict
@@ -586,15 +615,11 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
     server.enable 'case sensitive routing'
 
   # Bootstrap
-  bootstrap = fs.existsSync "#{$dir.app}/app#{$ext}"
   if bootstrap
     bootstrap = require("#{relativeAppDir}/app")
   if bootstrap and bootstrap.vhosts?
-    server = require('express')()
     vhosts = $injector.resolve bootstrap.vhosts
     server = vhosted server, $dir.project, vhosts
-  else
-    server = $injector.get '$app'
 
   $injector.register '$server', -> server
 
@@ -611,7 +636,7 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env) ->
       server.on 'listening', ->
         fs.writeFileSync "#{$dir.project}/.tmp/reload", 'reload'
   if $env is 'production'
-    $emitter.on 'mongoose-connected', ->
+    $emitter.on 'connected', ->
       listen()
   else
     listen()
