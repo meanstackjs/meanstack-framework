@@ -36,6 +36,7 @@ class Renderer
 
 aggregate = (collection, file, dir, value) ->
   chunks = path.relative(dir, file.replace(/\.[^.]+$/, '')).split(path.sep)
+  chunks.splice(1, 1)
   cursor = collection
   for i in [0..chunks.length - 1] by 1
     if i < chunks.length - 1
@@ -57,11 +58,10 @@ module.exports = (projectDir, appDir, ext) ->
   # Configure app name and directories
   pkg = require(path.join projectDir, 'package.json')
   name = pkg.name
-  publicDir = path.join projectDir, "public/#{name}"
+  publicDir = path.join projectDir, 'public'
   dir =
     project: projectDir
     public: publicDir
-    plugins: "#{projectDir}/plugins"
     vhosts: "#{projectDir}/vhosts"
     app: appDir
 
@@ -87,6 +87,14 @@ module.exports = (projectDir, appDir, ext) ->
     express = require("#{relativeProjectDir}/node_modules/express")
     injector.register '$express', -> express
 
+  packets = []
+  glob "#{appDir}/*/", sync: true, (err, files) ->
+    if err
+      console.log err
+      process.exit 0
+    for file in files
+      packets.push path.basename(file)
+
   # Register modules
   injector.register '$dependable', -> dependable
   injector.register '$glob', -> glob
@@ -104,51 +112,6 @@ module.exports = (projectDir, appDir, ext) ->
     css: {}
     other: {}
   injector.register '$mount', '/',
-  injector.register '$plugin',
-    register: (plugin, shared) ->
-      if fs.existsSync "#{plugin}#{ext}"
-        plugin = require("#{plugin}#{ext}")
-      else if fs.existsSync "#{plugin}.js"
-        plugin = require("#{plugin}.js")
-      else
-        plugin = require(plugin)
-
-      # Share database connection
-      if not shared? or shared is true
-        plugin.injector.register '__shared', true
-        if mongoose?
-          plugin.injector.register '$connection', -> injector.get('$connection')
-          plugin.injector.register '$mongoose', -> injector.get('$mongoose')
-
-      # Pass assets to plugin
-      assets = injector.get '$assets'
-      pluginAssets = plugin.injector.get '$assets'
-      if not pluginAssets[name]?
-        pluginAssets[name] = assets
-      plugin.injector.register '$assets', pluginAssets
-
-      # Load plugin
-      plugin.load()
-
-      # Store injectors and assets
-      injectors = injector.get '$injectors'
-      for k, v of plugin.injector.get '$injectors'
-        if not injectors[k]?
-          injectors[k] = v
-        if not assets[k]? and k isnt name
-          a = v.get '$assets'
-          if a[name]?
-            delete a[name]
-          assets[k] = a
-      return
-    get: (plugin) ->
-      injectors[plugin].get('$router')
-
-  # Register injectors and routes
-  injectors = {}
-  injectors[name] = injector
-  injector.register '$injectors', injectors
-  injector.register '__shared', false
 
   # Basic configuration
   config = {}
@@ -242,8 +205,6 @@ module.exports = (projectDir, appDir, ext) ->
       return
     loaded = true
 
-    __shared = injector.get '__shared'
-
     # Load chainware
     if chainware?.load?
       injector.resolve chainware.load
@@ -259,28 +220,23 @@ module.exports = (projectDir, appDir, ext) ->
     injector.register '$emitter', -> emitter
 
     # Database
-    if not __shared
-      connected = ->
-        emitter.emit 'connected'
-      if mongoose?
-        if _.size(config.database.options) > 0
-          connection = mongoose.createConnection(
-            config.database.uri,
-            config.database.options,
-            connected
-          )
-        else
-          connection = mongoose.createConnection(
-            config.database.uri,
-            connected
-          )
-        injector.register '$connection', -> connection
+    connected = ->
+      emitter.emit 'connected'
+    if mongoose?
+      if _.size(config.database.options) > 0
+        connection = mongoose.createConnection(
+          config.database.uri,
+          config.database.options,
+          connected
+        )
       else
-        connected()
-
-    # Plugins chainware
-    if chainware?.plugins
-      injector.resolve chainware.plugins
+        connection = mongoose.createConnection(
+          config.database.uri,
+          connected
+        )
+      injector.register '$connection', -> connection
+    else
+      connected()
 
     # Set default view renderer
     if express?
@@ -312,7 +268,7 @@ module.exports = (projectDir, appDir, ext) ->
         )
         app.set 'view engine', config.views.extension
         app.engine config.views.extension, config.views.render
-        globDir = path.resolve "#{config.views.dir}/**/*.#{config.views.extension}"
+        globDir = path.resolve "#{config.views.dir}/*/server/**/*.#{config.views.extension}"
         glob globDir, sync: true, (err, files) ->
           if err
             console.log err
@@ -327,9 +283,6 @@ module.exports = (projectDir, appDir, ext) ->
             aggregate views, file, config.views.dir, renderer
 
         # Register views
-        for k, v of injectors
-          if k isnt name
-            views[k] = v.get '$views'
         injector.register '$views', views
 
     # Resolve components
@@ -339,11 +292,6 @@ module.exports = (projectDir, appDir, ext) ->
         -> instance
       get = (instance) ->
         ->
-          for k, v of injectors
-            if instance.substring(0, k.length).replace('.', '-') is k
-              r = instance.substring(k.length + 1)
-              if r.length > 0
-                return v.get r
           injector.get instance
       construct = (key, instance, args) ->
         ->
@@ -406,7 +354,7 @@ module.exports = (projectDir, appDir, ext) ->
           injector.register key, () ->
             create(key, "__#{key}", {})()
     dir = path.resolve appDir
-    glob "#{dir}/**/*#{ext}", sync: true, (err, files) ->
+    glob "#{dir}/*/server/**/*#{ext}", sync: true, (err, files) ->
       for file in files
         if path.relative(dir, file) is "app#{ext}"
           continue
@@ -425,12 +373,6 @@ module.exports = (projectDir, appDir, ext) ->
           if prop.namespace?
             key = "#{prop.namespace}.#{key}"
           resolve prop, key
-
-    # Pass components to other injectors
-    for k, v of injectors
-      if k isnt name
-        i = v.get '$injectors'
-        i[name] = injector
 
     # Init chainware
     if chainware?.init?
@@ -503,11 +445,9 @@ module.exports = (projectDir, appDir, ext) ->
     if chainware?.static?
       injector.resolve chainware.static
 
-    for k, v of injectors
-      dir = v.get '$dir'
-      name = v.get '$name'
-      app.use "/public/#{name}", express.static(dir.public,
-        maxAge: config.static.expiry)
+    dir = injector.get '$dir'
+    app.use "/public", express.static(dir.public,
+      maxAge: config.static.expiry)
 
     # Cookie parser
     if chainware?['cookie-parser']?
@@ -572,8 +512,7 @@ module.exports = (projectDir, appDir, ext) ->
       injector.resolve chainware.dependencies
 
     # Resolve routes
-    for k, v of injectors
-      v.get('__route')()
+    injector.get('__route')()
     mount = injector.get '$mount'
     app.use mount, injector.get '$router'
 
