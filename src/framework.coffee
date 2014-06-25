@@ -66,8 +66,8 @@ module.exports = (projectDir, appDir, ext) ->
     app: appDir
 
   # Load chainware if available
-  if fs.existsSync "#{appDir}/app#{ext}"
-    chainware = require("#{relativeAppDir}/app")
+  if fs.existsSync "#{appDir}/main#{ext}"
+    chainware = require("#{relativeAppDir}/main")
 
   # Create injector
   injector = dependable.container()
@@ -541,7 +541,7 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env, $pkg) -
 
   relativeAppDir = path.relative(__dirname, $dir.app)
 
-  bootstrap = fs.existsSync "#{$dir.app}/app#{$ext}"
+  bootstrap = fs.existsSync "#{$dir.app}/main#{$ext}"
   if bootstrap and bootstrap.vhosts?
     server = $injector.get('$express')()
   else
@@ -555,7 +555,7 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env, $pkg) -
 
   # Bootstrap
   if bootstrap
-    bootstrap = require("#{relativeAppDir}/app")
+    bootstrap = require("#{relativeAppDir}/main")
   if bootstrap and bootstrap.vhosts?
     vhosts = $injector.resolve bootstrap.vhosts
     server = vhosted server, $dir.project, vhosts
@@ -565,7 +565,7 @@ module.exports.server = ($dir, $ext, $config, $injector, $emitter, $env, $pkg) -
   # Start server
   listen = ->
     if bootstrap and bootstrap.server?
-      server = $injector.resolve require("#{relativeAppDir}/app").server
+      server = $injector.resolve require("#{relativeAppDir}/main").server
     else
       http = require 'http'
       port = process.env.PORT or $config.port
