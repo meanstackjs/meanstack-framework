@@ -29,6 +29,7 @@
     "prepublish": "coffee --bare --compile --output lib src"
   },
   "dependencies": {
+    "source-map-support": "~0.2.6",
     "postrender": "git+https://github.com/jzvelc/postrender.git",
     "vhosted": "git+https://github.com/jzvelc/vhosted.git",
     "dependable": "~0.2.5",

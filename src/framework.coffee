@@ -1,173 +1,48 @@
-dependable = require 'dependable'
-postrender = require 'postrender'
-path = require 'path'
-glob = require 'glob'
-events = require 'events'
-vhosted = require 'vhosted'
-fs = require 'fs'
-_ = require 'lodash'
+require('source-map-support').install()
+dependable = require('dependable')
+postrender = require('postrender')
+path = require('path')
+glob = require('glob')
+events = require('events')
+vhosted = require('vhosted')
+fs = require('fs')
+_ = require('lodash')
 
-class Renderer
-  constructor: (@filename, @renderer, @cache, @locals) ->
-    return
-  render: (req, res, options, fn) ->
-    options = options or {}
-    if _.isFunction options
-      fn = options
-      options = {}
-    fn = fn or (err, str) ->
-      if err
-        return req.next err
-      res.send str
-      return
-    opts = {}
-    opts = _.assign opts, @locals
-    opts = _.assign opts, res.locals
-    opts = _.assign opts, options
-    opts.cache = if not opts.cache? \
-      then @cache
-      else opts.cache
-    opts.filename = @filename
-    try
-      @renderer(@filename, opts, fn)
-    catch err
-      fn err
-    return
-
-aggregate = (collection, file, dir, value) ->
-  chunks = path.relative(dir, file.replace(/\.[^.]+$/, '')).split(path.sep)
-  cursor = collection
-  for i in [0..chunks.length - 1] by 1
-    if i < chunks.length - 1
-      if not cursor[chunks[i]]?
-        cursor = cursor[chunks[i]] = {}
-      else
-        cursor = cursor[chunks[i]]
-    else
-      cursor[chunks[i]] = value
-
-resolve = (injector, prop, key) ->
-  filter = (instance) -> instance
-  wrap = (instance) ->
-    -> instance
-  get = (instance) ->
-    ->
-      for k, v of injectors
-        if instance.substring(0, k.length).replace('.', '-') is k
-          r = instance.substring(k.length + 1)
-          if r.length > 0
-            return v.get r
-      injector.get instance
-  construct = (key, instance, args) ->
-    ->
-      injector.register key, construct(key, instance, args)
-      instance.construct(args)
-  create = (key, instance, args) ->
-    ->
-      injector.register key, create(key, instance, args)
-      injector.get instance, args
-
-  if _.isArray(prop) and prop.length > 0 and _.isFunction(prop[prop.length - 1])
-    if prop.length > 1
-      tmp = prop.splice(0, prop.length - 1)
-      prop = prop[0]
-      prop.inject = tmp
-    else
-      prop = prop[0]
-
-  if prop.singleton?
-    singleton = prop.singleton
-  else
-    singleton = true
-
-  if _.isFunction prop
-    if prop.inject? or prop.name.length > 0
-      overrides = {}
-      match = prop.toString().match /function.*?\(([\s\S]*?)\)/
-      if not match? then throw new Error "could not parse function arguments: #{prop?.toString()}"
-      args = match[1].split(",").filter(filter).map((str) -> str.trim())
-      if not prop.inject?
-        prop.inject = args
-      if prop.name.length > 0
-        prop.construct = (a) ->
-          fconstructor = prop
-          nconstructor = () ->
-            fconstructor.apply(@, a)
-          nconstructor.prototype = fconstructor.prototype
-          return new nconstructor()
-      for i, r of args
-        overrides[r] = get(prop.inject[i])
-  if prop.inject?
-    if key?
-      if prop.name.length > 0
-        injector.register "__#{key}", wrap(prop)
-      else
-        injector.register "__#{key}", prop
-      injector.register key, () ->
-        if prop.name.length > 0
-          args = []
-          for l, e of overrides
-            args.push e()
-          if singleton
-            res = injector.get("__#{key}").construct(args)
-            injector.register key, wrap(res)
-          else
-            res = construct(key, injector.get("__#{key}"), args)()
-        else
-          for l, e of overrides
-            overrides[l] = e()
-          if singleton
-            res = injector.get "__#{key}", overrides
-            injector.register key, wrap(res)
-          else
-            res = create(key, "__#{key}", overrides)()
-        return res
-    else
-      if prop.name.length > 0
-        args = []
-        for l, e of overrides
-          args.push e()
-        prop.construct(args)
-      else
-        for l, e of overrides
-          overrides[l] = e()
-        injector.resolve overrides, prop
-  else
-    if singleton
-      injector.register key, prop
-    else
-      injector.register "__#{key}", prop
-      injector.register key, () ->
-        create(key, "__#{key}", {})()
-
-injectors = {}
-
-emitter = new events.EventEmitter()
+# Framework modules
+aggregate = require('./aggregate')
+resolve = require('./resolve')
+Renderer = require('./renderer')
 
 # Set default environment
 if not process.env.NODE_ENV?
   process.env.NODE_ENV = 'development'
 
-module.exports.glob = glob
 
-module.exports.load = (projectDir, appDir, ext) ->
-  appDir = path.resolve(appDir)
-  relativeProjectDir = path.relative(__dirname, projectDir)
-  relativeAppDir = path.relative(__dirname, appDir)
+# Globals
+injectors = {}
+emitter = new events.EventEmitter()
+connections = 0
+
+emitter.on 'connected', ->
+  connections--
+  if connections is 0
+    emitter.emit 'listen'
+
+# Load application
+load = (projectDir, appDir, appName) ->
 
   # Configure app name and directories
-  pkg = require(path.join projectDir, 'package.json')
-  name = path.basename(appDir)
-  publicDir = path.join projectDir, 'public'
+  pkg = require(path.join appDir.absolute, 'package.json')
+  name = appName
+  publicDir = path.join projectDir.absolute, 'public'
   dir =
-    project: projectDir
+    project: projectDir.absolute
     public: publicDir
-    vhosts: "#{projectDir}/vhosts"
-    app: appDir
+    app: appDir.absolute
 
   # Load chainware if available
-  if fs.existsSync "#{appDir}/server/app#{ext}"
-    chainware = require("#{relativeAppDir}/server/app")
+  if fs.existsSync "#{appDir.absolute}/server/app.js"
+    chainware = require("#{appDir.relative}/server/app")
 
   # Create injector
   injector = dependable.container()
@@ -178,17 +53,17 @@ module.exports.load = (projectDir, appDir, ext) ->
 
   # Register mongoose
   if pkg.dependencies?['mongoose']?
-    mongoose = require("#{relativeProjectDir}/node_modules/mongoose")
+    mongoose = require("#{appDir.relative}/node_modules/mongoose")
     injector.register '$mongoose', -> mongoose
 
   # Register swig
   if pkg.dependencies?['swig']?
-    swig = require("#{relativeProjectDir}/node_modules/swig")
+    swig = require("#{appDir.relative}/node_modules/swig")
     injector.register '$swig', -> swig
 
   # Register express
   if pkg.dependencies?['express']?
-    express = require("#{relativeProjectDir}/node_modules/express")
+    express = require("#{appDir.relative}/node_modules/express")
     injector.register '$express', -> express
 
   # Register modules
@@ -201,13 +76,11 @@ module.exports.load = (projectDir, appDir, ext) ->
   injector.register '$env', process.env.NODE_ENV
   injector.register '$dir', dir
   injector.register '$pkg', pkg
-  injector.register '$ext', ext
   injector.register '$name', name
   injector.register '$assets',
     js: {}
     css: {}
     other: {}
-  injector.register '$mount', '/',
 
   # Basic configuration
   config = {}
@@ -216,7 +89,6 @@ module.exports.load = (projectDir, appDir, ext) ->
   config.database.options = {}
   config.secret = 'meanstackjs'
   config.mount = '/'
-  config.port = 3000
   config.router =
     caseSensitive: false
     strict: false
@@ -224,6 +96,7 @@ module.exports.load = (projectDir, appDir, ext) ->
   # Assets configuration
   config.static = {}
   config.static.expiry = 0
+  config.static.release = 'release'
   if process.env.NODE_ENV is 'production'
     config.static.expiry = 1000 * 3600 * 24 * 365
 
@@ -249,7 +122,7 @@ module.exports.load = (projectDir, appDir, ext) ->
 
   # Default views configuration
   config.views = {}
-  config.views.dir = path.resolve "#{appDir}/server/"
+  config.views.dir = path.resolve "#{appDir.absolute}/server/"
   if process.env.NODE_ENV is 'production'
     config.views.cache = true
   else
@@ -258,34 +131,30 @@ module.exports.load = (projectDir, appDir, ext) ->
   config.views.extension = 'html'
   injector.register '$config', config
 
-  # Config chainware
-  if chainware?.config?
-    injector.resolve chainware.config
-
   # Register assets
-  assetFile = path.join publicDir, 'assets.json'
+  assetFile = path.join projectDir.absolute, '.tmp/assets.json'
   if fs.existsSync assetFile
     assets = JSON.parse(fs.readFileSync(assetFile))
     injector.register '$assets', assets
   assets = injector.get '$assets'
 
-  # Create app
-  if express?
-    app = express()
-    injector.register '$app', -> app
-    router = express.Router(config.router)
-    injector.register '$router', -> router
-    injector.register '$route', -> express.Router(config.router)
-
-  # Resolve routes
-  injector.register '__route', -> ->
-    # Main chainware
-    if chainware?.main?
-      resolve injector, chainware.main
+  # Config chainware
+  if chainware?.config?
+    injector.resolve chainware.config
 
   # Load app
-  load = ->
-    # Ensure trailing slash in mount path
+  return ->
+    # Create app
+    if express?
+      app = express()
+      injector.register '$app', -> app
+      router = express.Router(config.router)
+      injector.register '$router', -> router
+      injector.register '$route', -> express.Router(config.router)
+
+    # Ensure leading and trailing slash in mount path
+    if config.mount[0] isnt '/'
+      config.mount = '/' + config.mount
     if config.mount[config.mount.length - 1] isnt '/'
       config.mount += '/'
 
@@ -308,6 +177,7 @@ module.exports.load = (projectDir, appDir, ext) ->
     injector.register '$emitter', -> emitter
 
     # Database
+    connections++
     connected = ->
       emitter.emit 'connected'
     if mongoose?
@@ -374,9 +244,9 @@ module.exports.load = (projectDir, appDir, ext) ->
         injector.register '$views', views
 
     # Resolve components
-    glob "#{appDir}/server/**/*#{ext}", sync: true, (err, files) ->
+    glob "#{appDir.absolute}/server/**/*.js", sync: true, (err, files) ->
       for file in files
-        if path.relative(appDir, file) is "app#{ext}"
+        if path.relative(appDir.absolute, file) is "app.js"
           continue
         mdl = require file
         if mdl.namespace?
@@ -392,14 +262,12 @@ module.exports.load = (projectDir, appDir, ext) ->
             key = "#{ns}.#{key}"
           if prop.namespace?
             key = "#{prop.namespace}.#{key}"
-          resolve injector, prop, key
+          resolve injectors, injector, prop, key
 
     # Init chainware
     if chainware?.init?
       injector.resolve chainware.init
 
-  # Init app
-  init = ->
     if not express?
       return injector
 
@@ -410,8 +278,8 @@ module.exports.load = (projectDir, appDir, ext) ->
           if _.isBoolean config.middleware['connect-mongo']
             config.middleware['connect-mongo'] = {}
           config.middleware['connect-mongo']['db'] = injector.get('$connection').db
-          cm = require("#{relativeProjectDir}/node_modules/connect-mongo")
-          es = require("#{relativeProjectDir}/node_modules/express-session")
+          cm = require("#{appDir.relative}/node_modules/connect-mongo")
+          es = require("#{appDir.relative}/node_modules/express-session")
           store = new (cm(es))(config.middleware['connect-mongo'])
           if _.isBoolean config.middleware['express-session']
             config.middleware['express-session'] = {}
@@ -436,7 +304,7 @@ module.exports.load = (projectDir, appDir, ext) ->
     if chainware?['compression']?
       injector.resolve chainware['compression']
     if pkg.dependencies?['compression']? and config.middleware['compression']
-      m = require("#{relativeProjectDir}/node_modules/compression")
+      m = require("#{appDir.relative}/node_modules/compression")
       if not _.isBoolean config.middleware['compression']
         app.use m(config.middleware['compression'])
       else
@@ -446,7 +314,7 @@ module.exports.load = (projectDir, appDir, ext) ->
     if chainware?['serve-favicon']?
       injector.resolve chainware['compression']
     if pkg.dependencies?['serve-favicon']? and config.middleware['serve-favicon']
-      m = require("#{relativeProjectDir}/node_modules/serve-favicon")
+      m = require("#{appDir.relative}/node_modules/serve-favicon")
       if not _.isBoolean config.middleware['serve-favicon']
         app.use m(
           "#{publicDir}/favicon.ico",
@@ -459,15 +327,20 @@ module.exports.load = (projectDir, appDir, ext) ->
     if chainware?.static?
       injector.resolve chainware.static
 
-    dir = injector.get '$dir'
-    app.use "/public", express.static(dir.public,
-      maxAge: config.static.expiry)
+    if config.static
+      if process.env.NODE_ENV is 'production' and config.static.release
+        for n of injectors
+          app.use "/public/#{n}/#{config.static.release}", express.static("#{publicDir}/#{n}/#{config.static.release}",
+            maxAge: config.static.expiry)
+      else
+        app.use "/public", express.static("#{publicDir}",
+          maxAge: config.static.expiry)
 
     # Cookie parser
     if chainware?['cookie-parser']?
       injector.resolve chainware['cookie-parser']
     if pkg.dependencies?['cookie-parser']? and config.middleware['cookie-parser']
-      m = require("#{relativeProjectDir}/node_modules/cookie-parser")
+      m = require("#{appDir.relative}/node_modules/cookie-parser")
       if not _.isBoolean config.middleware['cookie-parser']
         app.use m(config.middleware['cookie-parser'])
       else
@@ -477,14 +350,14 @@ module.exports.load = (projectDir, appDir, ext) ->
     if chainware?['body-parser']?
       injector.resolve chainware['body-parser']
     if pkg.dependencies?['body-parser']? and config.middleware['body-parser']
-      m = require("#{relativeProjectDir}/node_modules/body-parser")
+      m = require("#{appDir.relative}/node_modules/body-parser")
       app.use m()
 
     # Express validator
     if chainware?['express-validator']?
       injector.resolve chainware['express-validator']
     if pkg.dependencies?['express-validator']? and config.middleware['express-validator']
-      m = require("#{relativeProjectDir}/node_modules/express-validator")
+      m = require("#{appDir.relative}/node_modules/express-validator")
       if not _.isBoolean config.middleware['express-validator']
         app.use m(config.middleware['express-validator'])
       else
@@ -494,14 +367,14 @@ module.exports.load = (projectDir, appDir, ext) ->
     if chainware?['method-override']?
       injector.resolve chainware['method-override']
     if pkg.dependencies?['method-override']? and config.middleware['method-override']
-      m = require("#{relativeProjectDir}/node_modules/method-override")
+      m = require("#{appDir.relative}/node_modules/method-override")
       app.use m()
 
     # Express session
     if chainware?['express-session']?
       injector.resolve chainware['express-session']
     if pkg.dependencies?['express-session']? and config.middleware['express-session']
-      m = require("#{relativeProjectDir}/node_modules/express-session")
+      m = require("#{appDir.relative}/node_modules/express-session")
       if not _.isBoolean config.middleware['express-session']
         app.use m(config.middleware['express-session'])
       else
@@ -511,14 +384,14 @@ module.exports.load = (projectDir, appDir, ext) ->
     if chainware?['view-helpers']?
       injector.resolve chainware['view-helpers']
     if pkg.dependencies?['view-helpers']? and config.middleware['view-helpers']
-      m = require("#{relativeProjectDir}/node_modules/view-helpers")
+      m = require("#{appDir.relative}/node_modules/view-helpers")
       app.use m(name)
 
     # Connect flash
     if chainware?['connect-flash']?
       injector.resolve chainware['connect-flash']
     if pkg.dependencies?['connect-flash']? and config.middleware['connect-flash']
-      m = require("#{relativeProjectDir}/node_modules/connect-flash")
+      m = require("#{appDir.relative}/node_modules/connect-flash")
       app.use m()
 
     # Dependencies chainware
@@ -526,15 +399,15 @@ module.exports.load = (projectDir, appDir, ext) ->
       injector.resolve chainware.dependencies
 
     # Resolve routes
-    injector.get('__route')()
-    mount = injector.get '$mount'
-    app.use mount, injector.get '$router'
+    if chainware?.main?
+      resolve injectors, injector, chainware.main
+    app.use '/', injector.get '$router'
 
     # Error handler
     if chainware?['errorhandler']?
       injector.resolve chainware['errorhandler']
     if pkg.dependencies?['errorhandler']? and config.middleware['errorhandler']
-      m = require("#{relativeProjectDir}/node_modules/errorhandler")
+      m = require("#{appDir.relative}/node_modules/errorhandler")
       app.use m()
 
     # Run chainware
@@ -543,68 +416,83 @@ module.exports.load = (projectDir, appDir, ext) ->
 
     return injector
 
-  return {
-    injector: injector
-    load: load
-    init: init
-  }
+module.exports.load = (dirname, filename) ->
+  projectDir =
+    absolute: path.resolve(dirname)
+  projectDir.relative = path.relative(__dirname, projectDir.absolute)
 
-module.exports.server = (projectDir, ext) ->
-  relativeProjectDir = path.relative(__dirname, projectDir)
-  pkg = require(path.join projectDir, 'package.json')
-  if pkg.dependencies?['express']?
-    server = require("#{relativeProjectDir}/node_modules/express")()
-  else
-    return
+  apps = {}
+  glob "#{projectDir.absolute}/lib/*/", {sync: true}, (err, appDirs) ->
+    for appDir in appDirs
+      appDir =
+        absolute: path.resolve(appDir)
+      appDir.relative = path.relative(__dirname, appDir.absolute)
+      appName = path.basename(appDir.absolute)
+      apps[appName] = load(projectDir, appDir, appName)
 
-  if ext isnt 'js'
-    dest = 'src'
-  else
-    dest = 'lib'
+  # Load main
+  main = fs.existsSync "#{projectDir.absolute}/lib/main.js"
+  if not main
+    console.error('Main file not found.')
+    process.exit(0)
+  main = require("#{projectDir.relative}/lib/main")
+
+  # Configure injectors
+  if main.config?
+    main.config(injectors)
 
   # Bootstrap
-  bootstrap = fs.existsSync "#{projectDir}/#{dest}/main#{ext}"
-  if not bootstrap
-    return
+  for name, app of apps
+    app()
 
-  bootstrap = require("#{relativeProjectDir}/#{dest}/main")
-  if not bootstrap.vhosts?
-    return
-  vhosts = bootstrap.vhosts(injectors, projectDir)
-  server = vhosted(server, projectDir, vhosts)
+  return injectors
+
+module.exports.listen = (dirname, filename) ->
+  projectDir =
+    absolute: path.resolve(dirname)
+  projectDir.relative = path.relative(__dirname, projectDir.absolute)
+
+  connectionsEstablished = 0
+
+  # Load express
+  pkg = require("#{projectDir.relative}/package.json")
+  if pkg.dependencies?['express']?
+    app = require("#{projectDir.relative}/node_modules/express")()
+  else
+    console.error('Express is not installed.')
+    process.exit(0)
+
+  # Load main
+  main = fs.existsSync "#{projectDir.absolute}/lib/main.js"
+  if not main
+    console.error('Main file not found.')
+    process.exit(0)
+  main = require("#{projectDir.relative}/lib/main")
+
+  # Vhosts
+  if not main.vhosts?
+    console.error('No virtual hosts specified.')
+    process.exit(0)
+  vhosts = main.vhosts(injectors)
+  app = vhosted(app, projectDir.absolute, vhosts)
 
   # Start server
   listen = ->
-    if bootstrap.server?
-      server = bootstrap.server(server, injectors, projectDir)
+    if main.server?
+      server = main.server(injectors, app)
     else
       http = require 'http'
       port = process.env.PORT or 3000
-      server = http.createServer(server).listen port, ->
+      server = http.createServer(app).listen port, ->
         console.log 'Server listening on port ' + port
     if server?
       server.on 'listening', ->
-        fs.writeFileSync "#{projectDir}/.tmp/reload", 'reload'
+        fs.writeFileSync "#{projectDir.absolute}/.tmp/reload", 'reload'
   if process.env.NODE_ENV is 'production'
-    emitter.on 'connected', ->
+    if connections is 0
       listen()
+    else
+      emitter.on 'listen', ->
+        listen()
   else
     listen()
-
-module.exports.init = (projectDir, ext, apps) ->
-  relativeProjectDir = path.relative(__dirname, projectDir)
-  if ext isnt 'js'
-    dest = 'src'
-  else
-    dest = 'lib'
-  bootstrap = fs.existsSync "#{projectDir}/#{dest}/main#{ext}"
-  if not bootstrap
-    return
-  bootstrap = require("#{relativeProjectDir}/#{dest}/main")
-
-  if bootstrap.config?
-    bootstrap.config(injectors, projectDir)
-
-  for name, app of apps
-    app.load()
-    app.init()
