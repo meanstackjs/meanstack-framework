@@ -87,9 +87,12 @@ module.exports = (injectors, injector, prop, key) ->
           overrides[l] = e()
         injector.resolve overrides, prop
   else
-    if singleton
-      injector.register key, prop
+    if key?
+      if singleton
+        injector.register key, prop
+      else
+        injector.register "__#{key}", prop
+        injector.register key, () ->
+          create(key, "__#{key}", {})()
     else
-      injector.register "__#{key}", prop
-      injector.register key, () ->
-        create(key, "__#{key}", {})()
+      injector.resolve prop
