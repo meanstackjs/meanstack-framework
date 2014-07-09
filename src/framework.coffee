@@ -503,11 +503,8 @@ module.exports.listen = (dirname, filename) ->
     if server?
       server.on 'listening', ->
         fs.writeFileSync "#{projectDir.absolute}/.tmp/reload", 'reload'
-  if process.env.NODE_ENV is 'production'
-    if connections is 0
-      listen()
-    else
-      emitter.on 'listen', ->
-        listen()
-  else
+  if connections is 0
     listen()
+  else
+    emitter.on 'listen', ->
+      listen()
